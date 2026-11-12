@@ -176,7 +176,7 @@ def run_agent(args, admin):
     stop_at = time.monotonic() + max(0, run["deadline_ms"] - started["server_time_ms"]) / 1000
     command = [s.replace("{prompt_file}", str(prompt)) for s in json.loads(args.command_json)]
     env = agent_environment(HARNESS_URL=args.url, HARNESS_RUN_ID=run["id"], HARNESS_RUN_TOKEN=started["run_token"],
-                            HARNESS_PROMPT_FILE=prompt, HARNESS_DEADLINE_MS=run["deadline_ms"])
+                            HARNESS_PROMPT_FILE=prompt)
     last_hash = None
     process = None
     watchdog = None
@@ -271,6 +271,12 @@ def main():
     start.add_argument("campaign")
     start.add_argument("agent")
     start.add_argument("--out", type=Path)
+    coordinated = sub.add_parser("run-coordinator", help="Launch a service-owned iterative coordinator run")
+    coordinated.add_argument("campaign")
+    coordinated.add_argument("agent")
+    coordinated.add_argument("--profile", default="codex")
+    workflow = sub.add_parser("workflow", help="Read coordinator progress and accepted iterations")
+    workflow.add_argument("run")
     submit = sub.add_parser("submit")
     submit.add_argument("run")
     submit.add_argument("workspace", type=Path)
@@ -278,6 +284,8 @@ def main():
     status.add_argument("run")
     close = sub.add_parser("close")
     close.add_argument("campaign")
+    score = sub.add_parser("score")
+    score.add_argument("campaign")
     request = sub.add_parser("request")
     request.add_argument("method", choices=["GET", "POST"])
     request.add_argument("path")
@@ -303,12 +311,19 @@ def main():
         result = client.request("POST", "/v1/runs", {"campaign_id": args.campaign, "agent": args.agent})
         if args.out:
             write_json(args.out, result)
+    elif args.command == "run-coordinator":
+        result = client.request("POST", "/v1/coordinator-runs", {"campaign_id": args.campaign, "agent": args.agent, "profile": args.profile})
+    elif args.command == "workflow":
+        result = client.request("GET", f"/v1/runs/{args.run}/coordinator")
+        result.update(client.request("GET", f"/v1/runs/{args.run}/iterations"))
     elif args.command == "submit":
         result = client.request("POST", f"/v1/runs/{args.run}/submissions", snapshot(args.workspace))
     elif args.command == "status":
         result = client.request("GET", f"/v1/runs/{args.run}")
     elif args.command == "close":
         result = client.request("POST", f"/v1/campaigns/{args.campaign}/close", {})
+    elif args.command == "score":
+        result = client.request("POST", f"/v1/campaigns/{args.campaign}/score", {})
     elif args.command == "request":
         result = client.request(args.method, args.path, json.loads(args.body.read_text()) if args.body else None)
     elif args.command == "run-agent":

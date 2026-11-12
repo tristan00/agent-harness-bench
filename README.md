@@ -4,6 +4,12 @@ A Rust API service that gives external coding agents timed tasks, freezes their 
 
 ## Run on this Windows machine
 
+For the **service-managed agent coordinator workflow**, run `./scripts/setup-coordinator.ps1`.
+It builds both Rust services, configures Codex as the initial planner/worker adapter, and starts the
+benchmark service at `http://127.0.0.1:8741`. State and build output default to `../runtime`, outside
+both source repositories. Each run starts a private coordinator.
+See [coordinator workflow](docs/coordinator.md) for starting either benchmark and exchanging models.
+
 ```powershell
 # Fetch once, then build and start a hidden background service.
 & "$env:USERPROFILE\.cargo\bin\cargo.exe" fetch --locked
@@ -14,7 +20,7 @@ Invoke-RestMethod http://127.0.0.1:8741/health
 .\scripts\stop.ps1
 ```
 
-The included build helper uses the installed GNU Rust toolchain, rust-lld and Windows SQLite. It also selects getrandom's supported Windows legacy backend because this host lacks `dlltool.exe`. On a normal Linux/macOS Rust installation: `cargo run --release --locked -- serve --data data`. Windows with a standard C toolchain/SQLite installation can use Cargo directly.
+The build helper uses MSVC with bundled SQLite when installed, with a GNU/rust-lld and Windows SQLite fallback. On Linux/macOS: `cargo run --release --locked -- serve --data data`. The coordinator integration currently targets the Windows coordinator.
 
 The service generates `data/admin-token` and `data/judge-token` (or accepts `HARNESS_API_TOKEN` / `HARNESS_JUDGE_TOKEN`, minimum 24 characters). The admin token is for the trusted harness controller; each builder gets its own scoped run token. Judges claim work using the judge token and receive a scoped judgment token. No LLM provider or credential is built in: connect your existing agent CLI using the adapters below.
 
@@ -43,9 +49,9 @@ python scripts/harness.py --token-file data/admin-token run-agent $campaignId ag
   --command-json '["my-agent", "--prompt-file", "{prompt_file}"]'
 ```
 
-Enrollment defaults to 60 seconds. Create a campaign with a longer `enrollment_seconds` via `create --config campaign.json` if you need more setup time. `close CAMPAIGN_ID` ends enrollment early, without shortening any builder's development clock. A chess tournament starts automatically after enrollment closes and every builder's clock expires. For games, each finished submission queues independently.
+Game enrollment defaults to 60 seconds and is configurable through `enrollment_seconds`. Chess enrollment has no automatic expiry. `close CAMPAIGN_ID` ends enrollment early, without shortening any builder's development clock. Chess enrollment stays open until explicitly closed. Closing does not score. Run `python scripts/harness.py --token-file data/admin-token score CAMPAIGN_ID` to explicitly request a tournament; it starts after every builder's clock expires. Games remain frozen until an explicit `score CAMPAIGN_ID` request; only then are they prepared and queued for a judge.
 
-`run-agent` enrolls, writes the returned prompt, runs your command, and uploads complete snapshots every second when files change. It stops the agent at its deadline. The agent gets `HARNESS_URL`, `HARNESS_RUN_ID`, `HARNESS_RUN_TOKEN`, `HARNESS_PROMPT_FILE` and `HARNESS_DEADLINE_MS`. Controller tokens are removed from its environment. A command can finish early; the adapter still holds the last snapshot through the deadline. For precise checkpoint control, call the submission API directly. The official entry is the **last snapshot fully accepted by the server before expiry**, not unsent filesystem changes. The adapter cannot atomically snapshot multiple files being edited simultaneously; keep checkpoints runnable.
+`run-agent` enrolls, writes the returned prompt, runs your command, and uploads complete snapshots every second when files change. It stops the agent at its deadline. The agent gets `HARNESS_URL`, `HARNESS_RUN_ID`, `HARNESS_RUN_TOKEN` and `HARNESS_PROMPT_FILE`. Controller tokens are removed from its environment. A command can finish early; the adapter still holds the last snapshot through the deadline. For precise checkpoint control, call the submission API directly. The official entry is the **last snapshot fully accepted by the server before expiry**, not unsent filesystem changes. The adapter cannot atomically snapshot multiple files being edited simultaneously; keep checkpoints runnable.
 
 For an immediate manual protocol trial:
 

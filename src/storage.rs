@@ -15,7 +15,7 @@ impl Store {
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;",
         )?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 1 {
+        if version > 2 {
             return Err("database belongs to a newer service version".into());
         }
         db.execute_batch("BEGIN;
@@ -26,7 +26,9 @@ impl Store {
           CREATE TABLE IF NOT EXISTS reports(run_id TEXT PRIMARY KEY REFERENCES runs(id), data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS games(campaign_id TEXT NOT NULL REFERENCES campaigns(id), number INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(campaign_id,number));
           CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, at_ms INTEGER NOT NULL, run_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL);
-          PRAGMA user_version=1; COMMIT;")?;
+          CREATE TABLE IF NOT EXISTS iterations(run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL, digest TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(run_id,number));
+          CREATE TABLE IF NOT EXISTS workflows(run_id TEXT PRIMARY KEY REFERENCES runs(id), data TEXT NOT NULL);
+          PRAGMA user_version=2; COMMIT;")?;
         Ok(Self { db })
     }
     fn one<T: DeserializeOwned>(&self, sql: &str, id: &str) -> Result<Option<T>> {
@@ -47,6 +49,53 @@ impl Store {
     }
     pub fn campaigns(&self) -> Result<Vec<Campaign>> {
         self.many("SELECT data FROM campaigns ORDER BY rowid", &[])
+    }
+    pub fn iterations(&self, run: &str) -> Result<Vec<Value>> {
+        self.many(
+            "SELECT data FROM iterations WHERE run_id=? ORDER BY number",
+            &[run],
+        )
+    }
+    pub fn iteration(&self, run: &str, number: u64, digest: &str) -> Result<Option<Value>> {
+        let saved: Option<(String, String)> = self
+            .db
+            .query_row(
+                "SELECT digest,data FROM iterations WHERE run_id=?1 AND number=?2",
+                params![run, i64::try_from(number)?],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        saved
+            .map(|(hash, data)| {
+                if hash != digest {
+                    return Err("iteration already submitted with different content".into());
+                }
+                Ok(serde_json::from_str(&data)?)
+            })
+            .transpose()
+    }
+    pub fn save_iteration(
+        &self,
+        run: &str,
+        number: u64,
+        digest: &str,
+        value: &Value,
+    ) -> Result<()> {
+        self.db.execute(
+            "INSERT INTO iterations VALUES(?1,?2,?3,?4)",
+            params![run, i64::try_from(number)?, digest, value.to_string()],
+        )?;
+        Ok(())
+    }
+    pub fn workflow(&self, run: &str) -> Result<Option<Value>> {
+        self.one("SELECT data FROM workflows WHERE run_id=?", run)
+    }
+    pub fn workflows(&self) -> Result<Vec<Value>> {
+        self.many("SELECT data FROM workflows ORDER BY rowid", &[])
+    }
+    pub fn save_workflow(&self, run: &str, value: &Value) -> Result<()> {
+        self.db.execute("INSERT INTO workflows VALUES(?1,?2) ON CONFLICT(run_id) DO UPDATE SET data=excluded.data", params![run, value.to_string()])?;
+        Ok(())
     }
     pub fn save_campaign(&self, c: &Campaign) -> Result<()> {
         self.db.execute(

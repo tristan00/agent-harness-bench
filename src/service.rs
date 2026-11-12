@@ -1,5 +1,5 @@
 use crate::{
-    Result, artifacts, chess,
+    Result, artifacts, chess, coordinator,
     model::*,
     now_ms,
     process::{self, Protocol, Tree},
@@ -34,6 +34,8 @@ pub struct Service {
     admin: String,
     judge_key: String,
     sessions: Mutex<HashMap<String, Session>>,
+    workflows: Mutex<HashMap<String, coordinator::Workflow>>,
+    address: Mutex<Option<String>>,
     pub stopping: AtomicBool,
     _lock: File,
 }
@@ -55,6 +57,72 @@ mod tests {
             .unwrap();
         let cid = c["campaign"]["id"].as_str().unwrap().to_owned();
         (root, service, token, cid)
+    }
+    #[test]
+    fn game_evaluation_requires_manual_request() {
+        let (_root, s, token, cid) = setup();
+        {
+            let db = s.db();
+            let mut c = db.campaign(&cid).unwrap();
+            c.config.benchmark = Benchmark::GameBuild;
+            c.config.development_seconds = 1800;
+            db.save_campaign(&c).unwrap();
+        }
+        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"game"})).unwrap();
+        let id = started["run"]["id"].as_str().unwrap();
+        {
+            let db = s.db();
+            let mut run = db.run(id).unwrap();
+            assert_eq!(run.deadline_ms - run.started_at_ms, 1_800_000);
+            run.deadline_ms = now_ms() - 1;
+            db.save_run(&run).unwrap();
+        }
+        s.route("POST", &format!("/v1/campaigns/{cid}/close"), &token, json!({})).unwrap();
+        s.tick().unwrap();
+        s.evaluate_next().unwrap();
+        assert_eq!(s.db().run(id).unwrap().status, "frozen");
+        assert!(s.db().judgments().unwrap().is_empty());
+        s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
+        s.evaluate_next().unwrap();
+        assert_eq!(s.db().judgments().unwrap().len(), 1);
+        assert_eq!(s.db().judgments().unwrap()[0].status, "pending");
+    }
+    #[test]
+    fn manual_enrollment_defers_scoring_but_preserves_run_deadlines() {
+        let (_root, s, token, cid) = setup();
+        {
+            let db = s.db();
+            let mut c = db.campaign(&cid).unwrap();
+            c.config.baselines = false;
+            c.config.development_seconds = 1200;
+            c.enrollment_deadline_ms = now_ms() - 1;
+            db.save_campaign(&c).unwrap();
+        }
+        s.tick().unwrap();
+        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"a"})).unwrap();
+        let id = started["run"]["id"].as_str().unwrap();
+        {
+            let db = s.db();
+            let mut run = db.run(id).unwrap();
+            assert_eq!(run.deadline_ms - run.started_at_ms, 1_200_000);
+            run.deadline_ms = now_ms() - 1;
+            db.save_run(&run).unwrap();
+        }
+        s.tick().unwrap();
+        s.evaluate_next().unwrap();
+        assert_eq!(s.db().run(id).unwrap().status, "frozen");
+        assert_eq!(s.db().campaign(&cid).unwrap().status, "enrolling");
+        assert!(s.db().games(&cid).unwrap().is_empty());
+        s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"b"})).unwrap();
+        s.route("POST", &format!("/v1/campaigns/{cid}/close"), &token, json!({})).unwrap();
+        assert_eq!(s.db().campaign(&cid).unwrap().status, "awaiting_score");
+        s.evaluate_next().unwrap();
+        assert_eq!(s.db().campaign(&cid).unwrap().status, "awaiting_score");
+        assert!(s.db().games(&cid).unwrap().is_empty());
+        assert_eq!(s.route("POST", &format!("/v1/campaigns/{cid}/score"), "invalid", json!({})).unwrap_err().0, 401);
+        s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
+        assert_eq!(s.db().campaign(&cid).unwrap().status, "scoring_requested");
+        assert_eq!(s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"c"})).unwrap_err().0, 409);
     }
     #[test]
     fn deadline_freezes_last_snapshot_and_rejects_late_uploads() {
@@ -109,6 +177,121 @@ mod tests {
         assert_eq!(r.status, "frozen");
         assert_eq!(
             r.submission_id.as_deref(),
+            accepted["submission"]["id"].as_str()
+        );
+    }
+    #[test]
+    fn iterations_are_sequential_idempotent_and_deadline_bound() {
+        let (_root, service, admin, campaign) = setup();
+        let start = service
+            .route(
+                "POST",
+                "/v1/runs",
+                &admin,
+                json!({"campaign_id":campaign,"agent":"iterations"}),
+            )
+            .unwrap();
+        let id = start["run"]["id"].as_str().unwrap();
+        let token = start["run_token"].as_str().unwrap();
+        let path = format!("/v1/runs/{id}/iterations");
+        let mut completion = json!({"iteration":1,"tasks":["reviewed-task"],"submission":{
+            "manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print('first')"}]
+        }});
+        assert_eq!(
+            service
+                .route("POST", &path, "invalid", completion.clone())
+                .unwrap_err()
+                .0,
+            401
+        );
+        completion["iteration"] = json!(2);
+        assert_eq!(
+            service
+                .route("POST", &path, token, completion.clone())
+                .unwrap_err()
+                .0,
+            409
+        );
+        completion["iteration"] = json!(1);
+        let first = service
+            .route("POST", &path, token, completion.clone())
+            .unwrap();
+        assert_eq!(
+            first,
+            service
+                .route("POST", &path, token, completion.clone())
+                .unwrap()
+        );
+        completion["submission"]["files"][0]["text"] = json!("print('second')");
+        assert_eq!(
+            service
+                .route("POST", &path, token, completion.clone())
+                .unwrap_err()
+                .0,
+            409
+        );
+        completion["iteration"] = json!(2);
+        let second = service
+            .route("POST", &path, token, completion.clone())
+            .unwrap();
+        assert_eq!(second["next_iteration"], 3);
+        assert_eq!(service.db().iterations(id).unwrap().len(), 2);
+        {
+            let db = service.db();
+            let mut run = db.run(id).unwrap();
+            run.deadline_ms = now_ms() - 1;
+            db.save_run(&run).unwrap();
+        }
+        completion["iteration"] = json!(3);
+        assert_eq!(
+            service
+                .route("POST", &path, token, completion)
+                .unwrap_err()
+                .0,
+            409
+        );
+        service.tick().unwrap();
+        assert_eq!(
+            service.db().run(id).unwrap().submission_id.as_deref(),
+            second["submission"]["id"].as_str()
+        );
+        assert_eq!(service.db().run(id).unwrap().status, "frozen");
+    }
+    #[test]
+    fn restart_marks_active_workflow_interrupted_without_losing_completions() {
+        let (root, service, admin, campaign) = setup();
+        let start = service
+            .route(
+                "POST",
+                "/v1/runs",
+                &admin,
+                json!({"campaign_id":campaign,"agent":"restart-workflow"}),
+            )
+            .unwrap();
+        let id = start["run"]["id"].as_str().unwrap();
+        let accepted = service.route("POST", &format!("/v1/runs/{id}/iterations"), &admin,
+            json!({"iteration":1,"submission":{"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print('accepted')"}]}})).unwrap();
+        service
+            .db()
+            .save_workflow(id, &json!({"run_id":id,"status":"running"}))
+            .unwrap();
+        drop(service);
+        let reopened = Service::open(root.path()).unwrap();
+        assert_eq!(
+            reopened.db().workflow(id).unwrap().unwrap()["status"],
+            "interrupted"
+        );
+        assert_eq!(
+            reopened.db().iterations(id).unwrap(),
+            vec![accepted.clone()]
+        );
+        let run = reopened.db().run(id).unwrap();
+        assert_eq!(
+            run.deadline_ms,
+            start["run"]["deadline_ms"].as_i64().unwrap()
+        );
+        assert_eq!(
+            run.submission_id.as_deref(),
             accepted["submission"]["id"].as_str()
         );
     }
@@ -260,6 +443,8 @@ impl Service {
             store: Mutex::new(store),
             root,
             sessions: Mutex::new(HashMap::new()),
+            workflows: Mutex::new(HashMap::new()),
+            address: Mutex::new(None),
             stopping: AtomicBool::new(false),
             _lock: lock,
         });
@@ -271,6 +456,19 @@ impl Service {
     }
     fn recover(&self) -> Result<()> {
         let db = self.db();
+        for mut workflow in db.workflows()? {
+            if workflow["status"] == "running" {
+                let id = workflow["run_id"]
+                    .as_str()
+                    .ok_or("invalid workflow")?
+                    .to_owned();
+                workflow["status"] = json!("interrupted");
+                workflow["error"] =
+                    json!("Service restarted; last accepted completion is retained for scoring");
+                db.save_workflow(&id, &workflow)?;
+                db.event(Some(&id), "coordinator_interrupted", &workflow)?;
+            }
+        }
         for mut run in db.all_runs()? {
             if run.status == "building" {
                 run.status = "frozen".into();
@@ -320,6 +518,30 @@ impl Service {
     }
     pub fn tick(&self) -> Result<()> {
         let now = now_ms();
+        let mut finished = Vec::new();
+        {
+            let mut workflows = self.workflows.lock().unwrap();
+            for (id, workflow) in workflows.iter_mut() {
+                if now >= workflow.deadline_ms || Instant::now() >= workflow.deadline {
+                    workflow.child.tree.stop();
+                    finished.push((id.clone(), "deadline", None));
+                } else if let Some(status) = workflow.child.try_wait()? {
+                    workflow.child.tree.stop();
+                    finished.push((
+                        id.clone(),
+                        if status.success() {
+                            "completed"
+                        } else {
+                            "failed"
+                        },
+                        status.code(),
+                    ));
+                }
+            }
+            for (id, _, _) in &finished {
+                workflows.remove(id);
+            }
+        }
         // Kill without acquiring the protocol mutex: a hung action cannot postpone termination.
         let stopped = {
             let mut sessions = self.sessions.lock().unwrap();
@@ -339,6 +561,15 @@ impl Service {
                 .collect::<Vec<_>>()
         };
         let db = self.db();
+        for (id, status, code) in finished {
+            if let Some(mut workflow) = db.workflow(&id)? {
+                workflow["status"] = json!(status);
+                workflow["exit_code"] = json!(code);
+                workflow["ended_at_ms"] = json!(now);
+                db.save_workflow(&id, &workflow)?;
+                db.event(Some(&id), "coordinator_stopped", &workflow)?;
+            }
+        }
         for mut run in db.all_runs()? {
             if run.status == "developing" && now >= run.deadline_ms {
                 run.status = "frozen".into();
@@ -351,11 +582,11 @@ impl Service {
             }
         }
         for mut c in db.campaigns()? {
-            if c.status == "enrolling" && now >= c.enrollment_deadline_ms {
+            if c.config.benchmark != Benchmark::Chess960 && c.status == "enrolling" && now >= c.enrollment_deadline_ms {
                 c.status = "waiting".into();
                 db.save_campaign(&c)?;
             }
-            if c.config.benchmark == Benchmark::GameBuild && c.status == "waiting" {
+            if c.config.benchmark == Benchmark::GameBuild && c.status == "scoring_requested" {
                 let runs = db.runs(&c.id)?;
                 if runs
                     .iter()
@@ -432,6 +663,9 @@ impl Service {
         for c in campaigns {
             let runs = self.db().runs(&c.id)?;
             if c.config.benchmark == Benchmark::GameBuild {
+                if c.status != "scoring_requested" {
+                    continue;
+                }
                 if let Some(run) = runs.into_iter().find(|r| r.status == "frozen") {
                     let run = self.prepare(run, &c.config)?;
                     let j = Judgment {
@@ -455,7 +689,7 @@ impl Service {
                     db.event(Some(&run.id), "judge_queued", &j)?;
                     return Ok(());
                 }
-            } else if ["waiting", "evaluating"].contains(&c.status.as_str())
+            } else if ["scoring_requested", "evaluating"].contains(&c.status.as_str())
                 && runs.iter().all(|r| r.status != "developing")
             {
                 self.tournament(c, runs)?;
@@ -831,13 +1065,82 @@ impl Service {
                     return Err(ApiError(409, "enrollment already closed".into()));
                 }
                 c.enrollment_deadline_ms = now_ms();
-                c.status = "waiting".into();
+                c.status = if c.config.benchmark == Benchmark::Chess960 { "awaiting_score" } else { "waiting" }.into();
+                db.save_campaign(&c)?;
+                Ok(json!({"campaign":c}))
+            }
+            ("POST", ["v1", "campaigns", id, "score"]) => {
+                self.admin(token)?;
+                let db = self.db();
+                let mut c = db.campaign(id)?;
+                if !["enrolling", "awaiting_score", "waiting"].contains(&c.status.as_str()) {
+                    return Err(ApiError(409, "campaign is not awaiting a manual scoring request".into()));
+                }
+                let runs = db.runs(id)?;
+                let entries = runs.len() + c.config.pool_run_ids.len() + if c.config.baselines { 2 } else { 0 };
+                if c.config.benchmark == Benchmark::Chess960 && entries < 2 {
+                    return Err(ApiError(409, "scoring requires at least two entries".into()));
+                }
+                if c.config.benchmark == Benchmark::GameBuild && runs.is_empty() {
+                    return Err(ApiError(409, "game evaluation requires at least one run".into()));
+                }
+                c.enrollment_deadline_ms = now_ms();
+                c.status = "scoring_requested".into();
                 db.save_campaign(&c)?;
                 Ok(json!({"campaign":c}))
             }
             ("GET", ["v1", "campaigns", id, "games"]) => {
                 self.admin(token)?;
                 Ok(json!({"games":self.db().games(id)?}))
+            }
+            ("GET", ["v1", "coordinator-profiles"]) => {
+                self.admin(token)?;
+                let profiles = coordinator::profiles(&self.root)?;
+                Ok(json!({"profiles":profiles.as_object().unwrap().keys().collect::<Vec<_>>()}))
+            }
+            ("POST", ["v1", "coordinator-runs"]) => {
+                self.admin(token)?;
+                let name = body["profile"]
+                    .as_str()
+                    .ok_or_else(|| ApiError(400, "profile required".into()))?;
+                let profile = coordinator::profile(&self.root, name)?;
+                let url = self
+                    .address
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| ApiError(503, "HTTP service is not running".into()))?;
+                let started = self.route("POST", "/v1/runs", token, body.clone())?;
+                let id = started["run"]["id"].as_str().unwrap();
+                let mut workflows = self.workflows.lock().unwrap();
+                let mut record =
+                    json!({"run_id":id,"profile":name,"status":"running","started_at_ms":now_ms()});
+                self.db().save_workflow(id, &record)?;
+                match coordinator::launch(&self.root, &url, &started, &profile) {
+                    Ok(workflow) => {
+                        workflows.insert(id.into(), workflow);
+                    }
+                    Err(error) => {
+                        record["status"] = json!("failed");
+                        record["error"] = json!(error.to_string());
+                        self.db().save_workflow(id, &record)?;
+                    }
+                }
+                self.db().event(Some(id), "coordinator_started", &record)?;
+                Ok(json!({"run":started["run"],"workflow":record,"server_time_ms":now_ms()}))
+            }
+            ("GET", ["v1", "runs", id, "coordinator"]) => {
+                self.run_auth(id, token)?;
+                let workflow = self.db().workflow(id)?;
+                let progress =
+                    fs::read(self.root.join("coordinator").join(id).join("progress.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+                Ok(json!({"workflow":workflow,"progress":progress,"server_time_ms":now_ms()}))
+            }
+            ("GET", ["v1", "runs", id, "iterations"]) => {
+                self.run_auth(id, token)?;
+                Ok(json!({"iterations":self.db().iterations(id)?}))
             }
             ("POST", ["v1", "runs"]) => {
                 self.admin(token)?;
@@ -853,7 +1156,7 @@ impl Service {
                 let db = self.db();
                 let c = db.campaign(campaign)?;
                 let now = now_ms();
-                if c.status != "enrolling" || now >= c.enrollment_deadline_ms {
+                if c.status != "enrolling" || (c.config.benchmark != Benchmark::Chess960 && now >= c.enrollment_deadline_ms) {
                     return Err(ApiError(409, "enrollment closed".into()));
                 }
                 let enrolled = db.runs(campaign)?;
@@ -890,16 +1193,55 @@ impl Service {
                 self.run_auth(id, token)?;
                 Ok(json!({"events":self.db().events(id)?}))
             }
-            ("POST", ["v1", "runs", id, "submissions"]) => {
+            ("POST", ["v1", "runs", id, kind @ ("submissions" | "iterations")]) => {
                 self.run_auth(id, token)?;
+                use sha2::{Digest, Sha256};
+                let iteration = if *kind == "iterations" {
+                    Some(
+                        body["iteration"]
+                            .as_u64()
+                            .filter(|n| *n > 0 && *n < i64::MAX as u64)
+                            .ok_or_else(|| {
+                                ApiError(400, "positive iteration number required".into())
+                            })?,
+                    )
+                } else {
+                    None
+                };
+                let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&body)?));
+                let replay = |db: &Store| -> ApiResult<Option<Value>> {
+                    if let Some(number) = iteration {
+                        if let Some(saved) = db
+                            .iteration(id, number, &digest)
+                            .map_err(|e| ApiError(409, e.to_string()))?
+                        {
+                            return Ok(Some(saved));
+                        }
+                        if number != db.iterations(id)?.len() as u64 + 1 {
+                            return Err(ApiError(
+                                409,
+                                "iterations must be sequential, starting at 1".into(),
+                            ));
+                        }
+                    }
+                    Ok(None)
+                };
                 {
                     let db = self.db();
                     let r = db.run(id)?;
                     if r.status != "developing" || now_ms() >= r.deadline_ms {
                         return Err(ApiError(409, "development deadline passed".into()));
                     }
+                    if let Some(saved) = replay(&db)? {
+                        return Ok(saved);
+                    }
                 }
-                let artifact = artifacts::save(&self.root, serde_json::from_value(body)?)?;
+                let submission = if iteration.is_some() {
+                    body["submission"].clone()
+                } else {
+                    body.clone()
+                };
+                let artifact = artifacts::save(&self.root, serde_json::from_value(submission)?)?;
                 let db = self.db();
                 let mut run = db.run(id)?;
                 // Check again after decoding/writing: arrival before expiry alone is insufficient.
@@ -909,6 +1251,9 @@ impl Service {
                         "deadline passed before snapshot was accepted".into(),
                     ));
                 }
+                if let Some(saved) = replay(&db)? {
+                    return Ok(saved);
+                }
                 let tx = db
                     .db
                     .unchecked_transaction()
@@ -917,10 +1262,16 @@ impl Service {
                 run.submission_id = Some(artifact.id.clone());
                 db.save_run(&run)?;
                 db.event(Some(id), "submitted", &artifact)?;
+                let mut accepted = json!({"submission":artifact,"accepted_at_ms":now_ms(),"deadline_ms":run.deadline_ms});
+                if let Some(number) = iteration {
+                    accepted["iteration"] = json!(number);
+                    accepted["next_iteration"] = json!(number + 1);
+                    accepted["tasks"] = body.get("tasks").cloned().unwrap_or(json!([]));
+                    db.save_iteration(id, number, &digest, &accepted)?;
+                    db.event(Some(id), "iteration_completed", &accepted)?;
+                }
                 tx.commit().map_err(|e| ApiError(500, e.to_string()))?;
-                Ok(
-                    json!({"submission":artifact,"accepted_at_ms":now_ms(),"deadline_ms":run.deadline_ms}),
-                )
+                Ok(accepted)
             }
             ("POST", ["v1", "judges", "claim"]) => self.claim(token, body),
             ("GET", ["v1", "judgments"]) => {
@@ -989,6 +1340,7 @@ impl Service {
             return Err("this local execution service must bind a loopback address; use an authenticated tunnel for remote clients".into());
         }
         let server = Arc::new(Server::http(address)?);
+        *self.address.lock().unwrap() = Some(format!("http://{}", server.server_addr()));
         eprintln!(
             "Evaluator listening on http://{}; data: {}",
             server.server_addr(),

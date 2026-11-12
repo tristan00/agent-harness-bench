@@ -80,7 +80,7 @@ def main():
             final_snapshot = ac.request("POST", f'/v1/runs/{a["run"]["id"]}/submissions', submission)["submission"]
             bc.request("POST", f'/v1/runs/{b["run"]["id"]}/submissions', bad)
             rejects(ac, "GET", f'/v1/runs/{b["run"]["id"]}', None, 401)
-            admin.request("POST", f'/v1/campaigns/{campaign["id"]}/close', {})
+            admin.request("POST", f'/v1/campaigns/{campaign["id"]}/score', {})
             rejects(admin, "POST", "/v1/runs", {"campaign_id": campaign["id"], "agent": "late"}, 409)
             result = wait_for(lambda: ac.request("GET", f'/v1/runs/{a["run"]["id"]}')["report"])
             bad_result = bc.request("GET", f'/v1/runs/{b["run"]["id"]}')["report"]
@@ -108,7 +108,7 @@ def main():
             assert time.monotonic() - started_at < 6
             adapter_run = json.loads((adapter_work / ".harness" / "run.json").read_text())
             adapter_client = Client(url, adapter_run["run_token"])
-            admin.request("POST", f'/v1/campaigns/{adapter_campaign["id"]}/close', {})
+            admin.request("POST", f'/v1/campaigns/{adapter_campaign["id"]}/score', {})
             adapter_report = wait_for(lambda: adapter_client.request("GET", f'/v1/runs/{adapter_run["run"]["id"]}')["report"])
             assert adapter_report["metrics"]["games"] == 2
             assert ac.request("GET", f'/v1/runs/{a["run"]["id"]}')["report"] == result
@@ -120,7 +120,7 @@ def main():
                 rust_run = admin.request("POST", "/v1/runs", {"campaign_id": rust_campaign["id"], "agent": "rust-fixture"})
                 rust_client = Client(url, rust_run["run_token"])
                 rust_client.request("POST", f'/v1/runs/{rust_run["run"]["id"]}/submissions', snapshot(ROOT / "examples" / "chess_rust"))
-                admin.request("POST", f'/v1/campaigns/{rust_campaign["id"]}/close', {})
+                admin.request("POST", f'/v1/campaigns/{rust_campaign["id"]}/score', {})
                 rust_report = wait_for(lambda: rust_client.request("GET", f'/v1/runs/{rust_run["run"]["id"]}')["report"], timeout=140)
                 assert rust_report["metrics"]["forfeits"] == 0, rust_client.request("GET", f'/v1/runs/{rust_run["run"]["id"]}')
                 evidence["rust"] = rust_report["metrics"]
@@ -131,7 +131,7 @@ def main():
             built = admin.request("POST", "/v1/runs", {"campaign_id": game_campaign["id"], "agent": "game-fixture"})
             gc = Client(url, built["run_token"])
             gc.request("POST", f'/v1/runs/{built["run"]["id"]}/submissions', snapshot(ROOT / "examples" / "game"))
-            admin.request("POST", f'/v1/campaigns/{game_campaign["id"]}/close', {})
+            admin.request("POST", f'/v1/campaigns/{game_campaign["id"]}/score', {})
             claimed = wait_for(lambda: (r if r["job"] else None) if (r := judge.request("POST", "/v1/judges/claim", {"judge": "fixture-test"})) else None)
             job = claimed["job"]
             assert job["launch_error"] is None, job
@@ -173,6 +173,7 @@ def main():
             jr = admin.request("POST", "/v1/runs", {"campaign_id": jc_campaign["id"], "agent": "judge-adapter-fixture"})
             jrc = Client(url, jr["run_token"])
             jrc.request("POST", f'/v1/runs/{jr["run"]["id"]}/submissions', snapshot(ROOT / "examples" / "game"))
+            admin.request("POST", f'/v1/campaigns/{jc_campaign["id"]}/score', {})
             wait_for(lambda: any(j["run_id"] == jr["run"]["id"] and j["status"] == "pending" for j in admin.request("GET", "/v1/judgments")["judgments"]))
             fake_judge = "import json,os,pathlib;pathlib.Path(os.environ['HARNESS_SCORE_FILE']).write_text(" + repr(json.dumps(score)) + ")"
             subprocess.run([sys.executable, str(ROOT / "scripts" / "harness.py"), "--url", url, "--token-file", str(data / "judge-token"),
@@ -185,6 +186,7 @@ def main():
             # Persist an active development deadline across a real process restart.
             recovery = admin.request("POST", "/v1/campaigns", {"benchmark": "game_build", "development_seconds": 2, "enrollment_seconds": 60, "judge_seconds": 1, "score_seconds": 1})["campaign"]
             unfinished = admin.request("POST", "/v1/runs", {"campaign_id": recovery["id"], "agent": "missing"})
+            admin.request("POST", f'/v1/campaigns/{recovery["id"]}/score', {})
             process.terminate()
             process.wait(timeout=10)
             time.sleep(2.1)

@@ -12,6 +12,7 @@ Tokens: **admin** manages campaigns and starts runs; **run** can read/upload onl
 | `GET /v1/campaigns` | Admin | Campaign list |
 | `GET /v1/campaigns/{id}` | Admin | Campaign, runs, completed-game count |
 | `POST /v1/campaigns/{id}/close` | Admin | Close enrollment early, retain development deadlines |
+| `POST /v1/campaigns/{id}/score` | Admin | Manually enable chess tournament or game preparation and judge queue; close enrollment |
 | `GET /v1/campaigns/{id}/games` | Admin | Persisted games and per-move FEN/timing traces |
 | `POST /v1/runs` | Admin | Start agent's timed run; returns prompt, run token, config, deadline |
 | `GET /v1/runs/{id}` | Run | Run state, optional final report, server time |
@@ -50,9 +51,11 @@ Success returns 200 JSON. Errors return `{"error":"..."}` with 400 (validation),
 
 `benchmark` is `chess960` or `game_build`. Omitting development time uses 600 for chess and 1800 for games. Omitting the seed generates one from OS randomness; returned config stores it. Theme words are sampled once per game campaign. Same seed, prompt version and implementation reproduce themes and chess schedule.
 
-Development/enrollment range: 1–86400 seconds. Exploration/scoring: 1–3600. Compilation: 1–1800. Start positions: 1–960; game cap: 2–2000 plies. Elo K: `(0,100]`. Up to 32 candidate runs per campaign; agent names are unique within a campaign. Up to 16 distinct `pool_run_ids` reference previously scored chess solutions with source snapshots in this database. They are rebuilt in fresh work directories; original scores are never overwritten. Baselines/imported entries appear in the pool standings but do not get new run records.
+Development/enrollment range: 1â€“86400 seconds. Exploration/scoring: 1â€“3600. Compilation: 1â€“1800. Start positions: 1â€“960; game cap: 2â€“2000 plies. Elo K: `(0,100]`. Up to 32 candidate runs per campaign; agent names are unique within a campaign. Up to 16 distinct `pool_run_ids` reference previously scored chess solutions with source snapshots in this database. They are rebuilt in fresh work directories; original scores are never overwritten. Baselines/imported entries appear in the pool standings but do not get new run records.
 
 ## Start and checkpoint
+
+Chess960 scoring is manual only. Enrollment remains open until an administrator closes it or requests scoring; `enrollment_seconds` does not expire chess enrollment. Each run still freezes at its own development deadline. Closing enrollment does not score. Use `POST /v1/campaigns/{id}/score` or `scripts/harness.py score CAMPAIGN_ID` to close enrollment and request a tournament once all development deadlines have passed. At least two entries are required. Set `baselines:false` to exclude built-in opponents.
 
 `POST /v1/runs`:
 
@@ -112,4 +115,10 @@ During `exploring`, POST `{"action":"describe","params":{}}` and other actions t
 }
 ```
 
-All five scores are integer 0–5 with nonempty evidence of at most 10000 bytes. Name 1–10 comparable published games. Notes are at most 20000 bytes. The service checks schema and lifecycle; it cannot verify an agent's subjective honesty. The final report contains all criteria, sum/25, mean/5, judge identity, prompt/config/themes, source hash/LOC and measured protocol/resource evidence. A scoring timeout or restart is an explicit evaluation failure, not five invented zeros.
+All five scores are integer 0â€“5 with nonempty evidence of at most 10000 bytes. Name 1â€“10 comparable published games. Notes are at most 20000 bytes. The service checks schema and lifecycle; it cannot verify an agent's subjective honesty. The final report contains all criteria, sum/25, mean/5, judge identity, prompt/config/themes, source hash/LOC and measured protocol/resource evidence. A scoring timeout or restart is an explicit evaluation failure, not five invented zeros.
+
+## Service-managed coordinator workflows
+
+See [coordinator workflow](coordinator.md#api-and-evidence) for `/v1/coordinator-profiles`, `/v1/coordinator-runs`, and run-scoped `/coordinator` and `/iterations` endpoints. These add completed-iteration submissions without changing the existing direct-agent snapshot API.
+
+Game evaluation also requires an explicit administrator `POST /v1/campaigns/{id}/score` request. Until requested, frozen games are neither built nor queued for judges. After the request, each expired run is prepared and queued; a judge must separately claim it. Closing enrollment alone does not enable evaluation.

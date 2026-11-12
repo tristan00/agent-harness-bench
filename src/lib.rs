@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod chess;
+pub mod coordinator;
 pub mod engine;
 pub mod model;
 pub mod process;

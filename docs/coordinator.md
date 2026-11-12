@@ -1,0 +1,95 @@
+# Service-managed coordinator runs
+
+Exactly two benchmark types are available: `chess960` and `game_build`.
+
+```mermaid
+flowchart LR
+    B[Benchmark prompt and fixed deadline] --> P[Manager agent plans iteration]
+    P --> C[Private coordinator implements and reviews tasks]
+    C --> S[Submit completed source snapshot]
+    S --> A[Benchmark accepts and returns next iteration number]
+    A --> P
+    D[Deadline] --> K[Kill manager, coordinator and workers]
+    D --> F[Freeze last accepted completion]
+    F --> E[Evaluate later]
+```
+
+The manager plans; the adapter posts the plan atomically to the coordinator batch API. The coordinator owns implementation, review and local replanning. Only a done container with no unfinished/active tasks is submitted. Every next planning call receives the prompt, remaining time, previous accepted snapshot metadata and coordinator task evidence. No benchmark score is required to start another iteration.
+
+## Install and run
+
+From the benchmark repository in PowerShell:
+
+```powershell
+.\scripts\setup-coordinator.ps1
+$data = '../runtime/benchmark-service'
+$token = Join-Path $data 'admin-token'
+$c = python scripts/harness.py --token-file $token create chess960 | ConvertFrom-Json
+$r = python scripts/harness.py --token-file $token run-coordinator $c.campaign.id experiment-1 --profile codex | ConvertFrom-Json
+python scripts/harness.py --token-file $token close $c.campaign.id
+python scripts/harness.py --token-file $token workflow $r.run.id
+python scripts/harness.py --token-file $token status $r.run.id
+```
+
+Use `create game_build` for the other benchmark. Pass `create --config campaign.json` to set time limits and evaluation settings. Development time starts at enrollment and includes startup, planning, implementation, review and upload. The start call returns immediately; the service owns the work even if the launching terminal exits. Setup preserves an existing profiles file. Stop with `scripts/stop.ps1 -DataDirectory ../runtime/benchmark-service`; restart with `setup-coordinator.ps1 -SkipBuild`.
+
+Chess scores only after an explicit `harness.py score CAMPAIGN_ID` request and after development ends. Closing enrollment alone does not score. Games remain frozen until an explicit `harness.py score CAMPAIGN_ID` request; they then await a separate judge claim. Waiting spends no exploration allowance. Use the existing `judge-worker` command with a Codex or local model agent equipped with browser/desktop tools. No subjective score is fabricated by this workflow.
+
+## Replaceable agents
+
+`DATA/coordinator-profiles.json` maps profile names to configurations. Changes apply to subsequent runs without service restart. The shipped `codex` profile uses the installed authenticated Codex CLI and its configured model.
+
+| Field | Meaning |
+| --- | --- |
+| `command` | Controller argv, normally Python plus absolute `scripts/coordinator.py` path |
+| `coordinator_command` | Absolute coordinator executable argv |
+| `planner_command` | Any executable implementing the planner file contract |
+| `workers.implementation`, `.review`, `.replan` | Commands implementing the coordinator worker protocol |
+| `env` | Adapter environment, e.g. `CODEX_BIN` or local model configuration |
+| `capabilities` | Worker capabilities, e.g. `process`, `network`, `browser` |
+| `workspace` | Coordinator workspace settings for the run workspace, e.g. `{"updates":"events"}` to wait on coordinator events instead of polling |
+
+No model SDK is required. Copy a profile and change commands or environment to exchange models. For the provided Codex planner, `HARNESS_CODEX_ARGS` is a JSON argv array supporting normal Codex model/local-provider options. This variable affects the planner only. Workers can use the coordinator's `--codex` adapter or any local executable reading `COORDINATOR_REQUEST` and writing `COORDINATOR_RESULT`. Configure every stage explicitly. Setup and validation use Codex or deterministic local protocol fixtures; no other hosted model provider is invoked.
+
+Planner commands receive `HARNESS_PLANNER_REQUEST` and `HARNESS_PLANNER_RESULT` absolute paths. Read request JSON, write result JSON, and exit zero. Requests include `protocol:1`, `prompt`, `benchmark`, `workspace`, `iteration`, `previous_completion` (accepted iteration plus compact coordinator tasks) and `error`. Time limits are never sent to agents. A planner that writes `usage.json` beside its request has its token counts summed into workflow progress as `planner_usage`; worker totals appear as `worker_tokens`. A result is:
+
+```json
+{
+  "action": "plan",
+  "title": "Deliver playable baseline",
+  "outcome": "Produce a runnable benchmark artifact",
+  "tasks": [{
+    "key": "baseline",
+    "title": "Implement baseline",
+    "outcome": "Implement the required protocol and write harness.json",
+    "acceptance": ["Protocol smoke check passes"],
+    "after": [],
+    "lane": "code"
+  }]
+}
+```
+
+Use `action:"finish"` with empty tasks to stop improving early; the last accepted completion remains eligible. Keys are unique; `after` names other keys in the iteration. Coordinator limits apply: titles ≤12 words, ≤3 criteria, ≤120 total definition words (the adapter adds a short benchmark-file reference). Cycles/invalid definitions return planner feedback. Tasks share the run workspace; only declared relations order them. A coordinator hold is visible as blocked until cutoff and is never submitted as completed work.
+
+## API and evidence
+
+* `GET /v1/coordinator-profiles` (admin): profile names.
+* `POST /v1/coordinator-runs` (admin): `{campaign_id,agent,profile}` enrolls and launches a service-owned workflow. Returns `run`, `workflow`, `server_time_ms`; inspect workflow status for launch errors.
+* `GET /v1/runs/ID/coordinator` (run/admin): authoritative workflow status and last controller progress.
+* `GET /v1/runs/ID/iterations` (run/admin): accepted iterations in order.
+* `POST /v1/runs/ID/iterations` (run/admin): `{iteration,tasks,submission}`; positive sequential numbers, starting at 1. Submission uses the existing full-snapshot schema. Response includes submission metadata, acceptance time, deadline, iteration and next_iteration.
+
+Same-number, same-content retries return the original acceptance while development is open. Conflicting retries and gaps return 409. After the deadline every submission returns 409, including retries; read accepted history instead. Iteration acceptance and the latest snapshot update in one SQLite transaction. Evidence, snapshots and scores survive restart.
+
+The service independently kills the workflow tree at its deadline, even if a controller is stuck uploading or an agent ignores instructions. Windows nested Job Objects enforce descendant cleanup. No shared coordinator is touched. Logs live under `DATA/coordinator/RUN_ID`; `launch.json` contains a scoped run credential and is excluded from submitted source. API workflow status is authoritative when a killed controller leaves a stale progress phase. This is a trusted local-code runner, not a sandbox.
+
+On service restart, interrupted workflows are marked `interrupted`; they are not automatically relaunched. Their original deadlines and last accepted completions remain eligible for evaluation. Start a new run for another development attempt. Unreviewed filesystem changes never count as completed work.
+
+## Verification
+
+```powershell
+.\scripts\cargo-windows.ps1 test --locked
+python scripts/smoke_coordinator.py --binary PATH/TO/harness-bench.exe --coordinator PATH/TO/agent-coordinator.exe --evidence ../runtime/evidence/coordinator-smoke.json
+```
+
+The smoke test runs both real services, accepts two reviewed iterations per benchmark, interrupts an unfinished third iteration, checks descendant termination and late rejection, scores chess after cutoff, leaves the game for a later judge, and verifies persistence. Deterministic fixtures test workflow correctness, not model ability or game quality.

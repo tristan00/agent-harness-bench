@@ -6,7 +6,7 @@ flowchart LR
     D --> U[Complete incremental snapshots]
     U --> F[Clock freezes last accepted version]
     F --> B[Bounded build of frozen source]
-    B --> T[Chess tournament after cohort closes]
+    B --> T[Chess tournament after explicit score request]
     B --> Q[Game waits for judge]
     Q --> J[Claim launches game and exploration timer]
     J --> S[Clock stops game process tree]
@@ -23,7 +23,7 @@ flowchart LR
 
 `src/engine.rs` is the ported, tested Chess960 rules engine; `src/chess.rs` owns seeded scheduling, process matches and Elo arithmetic. All entries reset Elo per campaign. Game records commit one at a time; the final report/status transaction commits after all games. On recovery, committed game results rebuild Elo and the next uncommitted game is replayed. Replaying cannot guarantee identical candidate behavior or wall-clock timing, only the same harness schedule and rules. Transcripts include chosen moves, FENs, response times, terminal reason and forfeit error.
 
-`src/storage.rs` creates schema version 1, enables WAL, foreign keys and full synchronous writes. A directory lock prevents simultaneous evaluator processes using the same DB. `events` stores lifecycle changes and game action evidence. Runs expose failure states instead of fabricating missing subjective scores. There is no automated retention/deletion policy; operators own disk retention. History endpoints return the latest 1000 events, while all events remain in SQLite. Full game traces can be large.
+`src/storage.rs` creates schema version 2, enables WAL, foreign keys and full synchronous writes. A directory lock prevents simultaneous evaluator processes using the same DB. `events` stores lifecycle changes and game action evidence. Runs expose failure states instead of fabricating missing subjective scores. There is no automated retention/deletion policy; operators own disk retention. History endpoints return the latest 1000 events, while all events remain in SQLite. Full game traces can be large.
 
 ## Restart behavior
 
@@ -45,3 +45,5 @@ LOC is not a complexity estimator: it counts nonblank physical lines including c
 The service is provider independent: there is no assumed model SDK, billing account, or proprietary harness protocol. A trusted controller enrolls a builder and hands it only the returned prompt, contract and scoped credentials. `scripts/harness.py run-agent` does that for any executable accepting a prompt file; its independent watchdog ends the development process tree even if an upload is blocked. `judge-worker` hands a pending job to any judge executable with browser/desktop/API tools and accepts the judge's score file. An external framework can use HTTP directly instead of these adapters.
 
 Run on a dedicated trusted benchmark host. Authentication protects API state; it does not isolate arbitrary code executing under the same user. Bind is restricted to loopback. For remote agents, use a secured tunnel and ensure the judge's browser/desktop can access the local game. Do not expose the runner directly as a public multi-tenant service without a separate isolation layer and quotas.
+
+Service-owned coordinator runs use `src/coordinator.rs` for process ownership and `scripts/coordinator.py` for the model-independent planning/dispatch/completion loop. The scheduler terminates their process trees at the fixed development cutoff. SQLite `workflows` and `iterations` preserve execution status and idempotent completion receipts. See [coordinator workflow](coordinator.md) for contracts and restart behavior.

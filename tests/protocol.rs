@@ -36,6 +36,21 @@ fn entry(id: &str, script: &str) -> Entry {
 }
 const VALID: &str = "import sys,json\nprint('{\"ready\":true}',flush=True)\nfor line in sys.stdin:\n r=json.loads(line);print(json.dumps({'id':r['id'],'move':r['allowed_moves'][0]}),flush=True)";
 
+#[cfg(windows)]
+#[test]
+fn sanitized_build_can_find_windows_rust_linker() {
+    let dir = std::env::temp_dir().join(format!("harness-compiler-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.rs"), "fn main() { println!(\"ready\"); }").unwrap();
+    let mut candidate = manifest(VALID);
+    candidate.build = Some(vec!["rustc".into(), "main.rs".into(), "-o".into(), "compiled.exe".into()]);
+    let result = process::build(&candidate, &dir, Duration::from_secs(30));
+    let exists = dir.join("compiled.exe").is_file();
+    std::fs::remove_dir_all(&dir).unwrap();
+    result.unwrap();
+    assert!(exists);
+}
+
 #[test]
 fn persistent_protocol_and_timeout() {
     let dir = std::env::current_dir().unwrap();

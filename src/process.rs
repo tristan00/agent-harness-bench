@@ -128,6 +128,19 @@ impl OwnedChild {
             "USERPROFILE",
             "APPDATA",
             "LOCALAPPDATA",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "INCLUDE",
+            "LIB",
+            "LIBPATH",
+            "VCINSTALLDIR",
+            "VSINSTALLDIR",
+            "VCToolsInstallDir",
+            "WindowsSdkDir",
+            "WindowsSDKVersion",
+            "VSCMD_ARG_TGT_ARCH",
+            "VSCMD_VER",
             "CARGO_HOME",
             "RUSTUP_HOME",
             "RUSTUP_TOOLCHAIN",
@@ -151,6 +164,12 @@ impl OwnedChild {
         if let Some(port) = port {
             cmd.env("HARNESS_PORT", port.to_string());
         }
+        Self::launch(cmd)
+    }
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
+        Ok(self.child.try_wait()?)
+    }
+    pub fn launch(mut cmd: Command) -> Result<Self> {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

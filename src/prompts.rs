@@ -1,6 +1,6 @@
 use crate::model::{Benchmark, Campaign};
 
-pub const VERSION: &str = "2026-11-12.v1";
+pub const VERSION: &str = "2026-11-12.v4";
 pub fn themes(seed: u64) -> Vec<String> {
     const POOLS: [&[&str]; 4] = [
         &[
@@ -81,9 +81,14 @@ pub fn themes(seed: u64) -> Vec<String> {
 
 pub fn builder(c: &Campaign) -> String {
     let shared = format!(
-        "You have {} seconds of development time, measured by the evaluator. Keep submitting complete incremental versions through the submission API. The last complete version accepted before the deadline is frozen automatically. Submit all source and required assets with a manifest containing run (an argv array), optional build (an argv array), optional env, and source_files for unusual language extensions. Build commands run against the frozen files, with a separate {} second compilation limit; all dependencies must already be available on the evaluation host or included. Paths are relative to your submitted directory. Do not assume your development workspace is used at evaluation time. The implementation language and approach are your choice. A process must print {{\"ready\":true}} followed by a newline within 5 seconds of launch. Use stdout only for newline-delimited JSON protocol responses, flush each response, and send logs to stderr. Each request carries an integer id; echo it unchanged in the response. Protocol lines are limited to 64 KiB.\n",
-        c.config.development_seconds, c.config.build_seconds
+        "Keep submitting complete incremental versions through the submission API. The last complete version accepted is frozen automatically and evaluated. Submit all source and required assets with a manifest containing run (an argv array), optional build (an argv array), optional env, and source_files for unusual language extensions. Build commands run against the frozen files, with a separate {} second compilation limit; all dependencies must already be available on the evaluation host or included. Paths are relative to your submitted directory. Do not assume your development workspace is used at evaluation time. The implementation language and approach are your choice. A process must print {{\"ready\":true}} followed by a newline within 5 seconds of launch. Use stdout only for newline-delimited JSON protocol responses, flush each response, and send logs to stderr. Each request carries an integer id; echo it unchanged in the response. Protocol lines are limited to 64 KiB.\n",
+        c.config.build_seconds
     );
+    let shared = if c.config.benchmark == Benchmark::Chess960 {
+        format!("{shared}\nPrebuilt engines such as stockfish are banned.\nYou may use `D:\\harness_work\\agent-harness-bench\\src\\engine.rs` for development if you choose.\n")
+    } else {
+        shared
+    };
     match c.config.benchmark {
         Benchmark::Chess960 => format!(
             "BENCHMARK: Chess960 move selector\nPrompt version: {VERSION}\n{shared}\nBuild a move-selection function with the logical signature pick_move(fen: string, allowed_moves: list[string]) -> string, and an executable wrapper for it. Input example: {{\"id\":1,\"fen\":\"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1\",\"allowed_moves\":[\"e2e4\",\"g1f3\"]}}. Output example: {{\"id\":1,\"move\":\"e2e4\"}}. The evaluator supplies Shredder-FEN and the complete legal move list. Move strings use UCI960: castling is encoded as the king moving to its rook's origin square. Select exactly one supplied move. Every response has a strict 100 ms wall-clock limit including protocol I/O, excluding process startup. An error, invalid response, crash, illegal move, or timeout forfeits that game. The evaluator owns all chess state and rules. The process persists for a game and is restarted for each game.\nYour frozen solution enters a seeded, color-balanced round-robin tournament against the campaign's pool. Every entry starts at {} Elo, K={}. The reported quality metrics are Elo change and nonblank physical source lines (including comments). Draws are claimed automatically at threefold repetition or 100 halfmoves; the configured {}-ply game cap is a draw.\n",

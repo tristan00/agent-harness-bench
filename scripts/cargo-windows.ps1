@@ -1,5 +1,16 @@
 param([Parameter(ValueFromRemainingArguments)] [string[]] $CargoArguments)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'compiler-environment.ps1')
+$installed = & (Join-Path $env:USERPROFILE '.cargo/bin/rustup.exe') toolchain list
+if ($installed -match 'stable-x86_64-pc-windows-msvc') {
+    $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-msvc'
+    if (!$CargoArguments) { $CargoArguments = @('test', '--locked') }
+    if ($CargoArguments[0] -in @('build', 'test', 'check', 'clippy', 'run')) {
+        $CargoArguments = @($CargoArguments[0], '--features', 'rusqlite/bundled') + @($CargoArguments | Select-Object -Skip 1)
+    }
+    & (Join-Path $env:USERPROFILE '.cargo/bin/cargo.exe') @CargoArguments
+    exit $LASTEXITCODE
+}
 $toolchain = 'stable-x86_64-pc-windows-gnu'
 $rustup = Join-Path $env:USERPROFILE '.cargo/bin/rustup.exe'
 $cargo = Join-Path $env:USERPROFILE '.cargo/bin/cargo.exe'
