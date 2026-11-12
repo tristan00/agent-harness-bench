@@ -1,0 +1,5 @@
+{
+  "run": ["python", "game.py"],
+  "source_files": ["game.py", "index.html"],
+  "ui": "web"
+}

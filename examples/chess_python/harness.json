@@ -1,0 +1,4 @@
+{
+  "run": ["python", "picker.py"],
+  "source_files": ["picker.py"]
+}

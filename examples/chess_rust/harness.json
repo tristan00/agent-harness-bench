@@ -1,0 +1,5 @@
+{
+  "build": ["cargo", "build", "--release", "--offline"],
+  "run": ["target/release/example-picker"],
+  "source_files": ["src/main.rs"]
+}

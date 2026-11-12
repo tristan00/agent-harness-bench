@@ -1,0 +1,27 @@
+[package]
+name = "agent-harness-bench"
+version = "0.1.0"
+edition = "2024"
+default-run = "harness-bench"
+
+[[bin]]
+name = "harness-bench"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+shakmaty = "=0.30.2"
+tiny_http = "0.12"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+rusqlite = "0.38"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+rusqlite = { version = "0.38", features = ["bundled"] }
+libc = "0.2"
