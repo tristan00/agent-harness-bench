@@ -37,6 +37,8 @@ struct Request {
     order_seed: Option<u64>,
     #[serde(default)]
     task_configs: BTreeMap<String, Value>,
+    #[serde(default)]
+    benchmarks: Option<Vec<String>>,
 }
 
 fn default_parallel() -> usize { 8 }
@@ -299,20 +301,27 @@ impl Service {
             }
         }
         let id = crate::id();
+        if request.benchmarks.as_ref().is_some_and(|names| names.is_empty() || names.iter().any(|n| !["chess960", "game_build", "dataset_dashboard", "maze_sequence"].contains(&n.as_str()))) {
+            return Err("benchmarks must list supported tasks".into());
+        }
         let mut campaigns = BTreeMap::new();
         let mut campaign_records = Vec::new();
         if request
             .task_configs
             .keys()
-            .any(|k| !["chess960", "game_build", "dataset_dashboard"].contains(&k.as_str()))
+            .any(|k| !["chess960", "game_build", "dataset_dashboard", "maze_sequence"].contains(&k.as_str()))
         {
-            return Err("supported tasks are chess960, game_build and dataset_dashboard".into());
+            return Err("supported tasks are chess960, game_build, dataset_dashboard and maze_sequence".into());
         }
         for (name, benchmark, seconds) in [
             ("chess960", Benchmark::Chess960, 600),
             ("game_build", Benchmark::GameBuild, 1800),
             ("dataset_dashboard", Benchmark::DatasetDashboard, 900),
+            ("maze_sequence", Benchmark::MazeSequence, 5400),
         ] {
+            if request.benchmarks.as_ref().is_some_and(|names| !names.iter().any(|n| n == name)) {
+                continue;
+            }
             let mut config = request.task_configs.get(name).cloned().unwrap_or(json!({}));
             if !config.is_object() {
                 return Err("task configuration must be an object".into());
@@ -640,11 +649,20 @@ mod tests {
             "workspaces":selected,"order_seed":960})).unwrap();
         assert_eq!(batch["max_parallel"],8);
         assert_eq!(batch["order_seed"],960);
-        assert_eq!(batch["cases"].as_array().unwrap().len(),48);
+        assert_eq!(batch["cases"].as_array().unwrap().len(),64);
         assert!(batch["cases"].as_array().unwrap().iter().all(|case| case["status"] == "queued"));
         let id = batch["id"].as_str().unwrap().to_owned();
         drop(service);
         let reopened = Service::open(root.path()).unwrap();
         assert_eq!(public(&reopened.db().batch(&id).unwrap()), batch);
+        let only = workspaces.join("maze-only");
+        fs::create_dir(&only).unwrap();
+        let mut single = selected[0].clone();
+        for filename in ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"] { fs::write(only.join(filename), "Selected fixture instructions.").unwrap(); }
+        single["path"] = json!(only);
+        let maze = reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
+            "workspaces":[single],"benchmarks":["maze_sequence"]})).unwrap();
+        assert_eq!(maze["cases"].as_array().unwrap().len(),1);
+        assert_eq!(maze["cases"][0]["benchmark"],"maze_sequence");
     }
 }

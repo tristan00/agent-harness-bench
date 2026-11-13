@@ -7,6 +7,7 @@ pub enum Benchmark {
     Chess960,
     GameBuild,
     DatasetDashboard,
+    MazeSequence,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

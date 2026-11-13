@@ -193,6 +193,9 @@ def main():
 def score_batch(args, output, config):
     client = Client(args.url, (args.data / "admin-token").read_text().strip())
     batch = client.request("GET", f"/v1/benchmark-batches/{args.batch}")["batch"]
+    deferred = [case for case in batch["cases"] if case["benchmark"] not in config["benchmark_weights"]]
+    batch["cases"] = [case for case in batch["cases"] if case["benchmark"] in config["benchmark_weights"]]
+    batch["campaigns"] = {name: campaign for name, campaign in batch["campaigns"].items() if name in config["benchmark_weights"]}
     if any(case["status"] in {"queued","running"} for case in batch["cases"]):
         raise ValueError("Development must finish before scoring")
     if (output / "config.json").exists() and read(output / "config.json") != config:
@@ -249,7 +252,12 @@ def score_batch(args, output, config):
     scored = [score(item, reviewed.get(item["run_id"]), config, mode) for item in metrics]
     implementation = {name:hashlib.sha256((ROOT / "scripts" / name).read_bytes()).hexdigest()
                       for name in ["score_batch.py", "batch_metrics.py", "agent_selection.py"]}
-    report = {"batch_id":args.batch,"config":config,"created_at_ms":int(time.time()*1000),"cases":scored,
+    unscored = []
+    for case in deferred:
+        run = client.request("GET", f'/v1/runs/{case["run_id"]}') if case.get("run_id") else {}
+        unscored.append({"metrics":collect(case, run.get("run"), args.data, args.coordinator_data),
+                         "stages":run.get("stages", []),"stages_reached":len(run.get("stages", []))})
+    report = {"batch_id":args.batch,"config":config,"created_at_ms":int(time.time()*1000),"cases":scored,"unscored":unscored,
               "scoring_execution":{"judge":args.judge, "max_judges":args.max_judges,
                                    "timeout_seconds":args.timeout, "implementation_sha256":implementation},
               "token_scoring_mode":mode,"ranking":aggregate(scored,config),

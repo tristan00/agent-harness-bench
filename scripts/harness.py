@@ -270,7 +270,7 @@ def main():
     parser.add_argument("--token-file", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
     create = sub.add_parser("create")
-    create.add_argument("benchmark", choices=["chess960", "game_build", "dataset_dashboard"])
+    create.add_argument("benchmark", choices=["chess960", "game_build", "dataset_dashboard", "maze_sequence"])
     create.add_argument("--config", type=Path, help="Optional campaign JSON configuration")
     start = sub.add_parser("start")
     start.add_argument("campaign")

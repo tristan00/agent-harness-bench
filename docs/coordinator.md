@@ -2,7 +2,7 @@
 
 For fresh planners that directly manage their own tasks using the approved prompt template, use [template planner batches](batches.md). The iteration adapter documented below is the older structured-plan mode and remains available separately.
 
-Available benchmark types are `chess960`, `game_build`, and `dataset_dashboard`. Dashboard development defaults to 900 seconds and its scoring phase is deferred.
+Available benchmark types are `chess960`, `game_build`, `dataset_dashboard`, and `maze_sequence`. The maze sequence reveals six fixed instructions one at a time: each stage is declared complete with `POST /v1/runs/ID/stages` after its final submission, and the run freezes after the last stage or at its single 5400 second deadline. Its scoring is deferred; stages reached and per-stage timestamps and snapshots are recorded. Dashboard development defaults to 900 seconds and its scoring phase is deferred.
 
 ```mermaid
 flowchart LR

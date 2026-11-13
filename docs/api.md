@@ -17,6 +17,7 @@ Tokens: **admin** manages campaigns and starts runs; **run** can read/upload onl
 | `POST /v1/runs` | Admin | Start agent's timed run; returns prompt, run token, config, deadline |
 | `GET /v1/runs/{id}` | Run | Run state, optional final report, server time |
 | `POST /v1/runs/{id}/submissions` | Run | Atomically select a complete pre-deadline snapshot |
+| `POST /v1/runs/{id}/stages` | Run | Sequential benchmarks: declare `{"stage":N}` complete after submitting it; returns the next instruction |
 | `GET /v1/runs/{id}/events` | Run | Latest 1000 audit/action events, newest first |
 | `POST /v1/judges/claim` | Judge registry | Claim and launch one pending game; returns scoped token and judge prompt |
 | `GET /v1/judgments` | Admin | Judge queue and states |
@@ -49,7 +50,7 @@ Success returns 200 JSON. Errors return `{"error":"..."}` with 400 (validation),
 }
 ```
 
-`benchmark` is `chess960`, `game_build`, or `dataset_dashboard`. Omitting development time uses 600 seconds for chess, 1800 for games, and 900 for dashboards. Dashboards receive an independent random dataset assignment per workspace/run, persisted for later scoring. Omitting the seed generates one from OS randomness; returned config stores it. Theme words are sampled once per game campaign. Same seed, prompt version and implementation reproduce themes and chess schedule.
+`benchmark` is `chess960`, `game_build`, `dataset_dashboard`, or `maze_sequence`. Omitting development time uses 600 seconds for chess, 1800 for games, 900 for dashboards, and 5400 for the maze sequence. Dashboards receive an independent random dataset assignment per workspace/run, persisted for later scoring. Omitting the seed generates one from OS randomness; returned config stores it. Theme words are sampled once per game campaign. Same seed, prompt version and implementation reproduce themes and chess schedule.
 
 Development/enrollment range: 1â€“86400 seconds. Exploration/scoring: 1â€“3600. Compilation: 1â€“1800. Start positions: 1â€“960; game cap: 2â€“2000 plies. Elo K: `(0,100]`. Up to 32 candidate runs per campaign; agent names are unique within a campaign. Up to 16 distinct `pool_run_ids` reference previously scored chess solutions with source snapshots in this database. They are rebuilt in fresh work directories; original scores are never overwritten. Baselines/imported entries appear in the pool standings but do not get new run records.
 
