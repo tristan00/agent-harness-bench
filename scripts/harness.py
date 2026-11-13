@@ -191,6 +191,7 @@ def main():
         result = client.request("GET", f"/v1/runs/{args.run}/task")
     else:
         result = client.request("POST", f"/v1/runs/{args.run}/submissions", snapshot(args.workspace))
+    sys.stdout.reconfigure(encoding="utf-8")
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
