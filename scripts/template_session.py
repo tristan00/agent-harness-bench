@@ -23,6 +23,17 @@ def next_step(exit_code, state, stalls):
     return ("stop" if stalls >= STALL_LIMIT else "continue"), stalls
 
 
+def active_tasks(coordinator, workspace):
+    root = str(Path(workspace).resolve()).lower().lstrip("\\\\?\\")
+    tasks = coordinator.request("GET", "/api/state")["tasks"]
+    return [task for task in tasks if task.get("active") and str(task.get("cwd", "")).lower().lstrip("\\\\?\\").startswith(root)]
+
+
+def wait_for_idle(coordinator, workspace, pause=5):
+    while active_tasks(coordinator, workspace):
+        time.sleep(pause)
+
+
 def main():
     launch_path = Path(os.environ["HARNESS_WORKFLOW_REQUEST"])
     launch = json.loads(launch_path.read_text(encoding="utf-8"))
@@ -87,8 +98,9 @@ def main():
     stalls = 0
     while True:
         code = planner.wait()
-        progress.update(phase="planner_exited", planner_exit_code=code)
+        progress.update(phase="waiting_for_workers", planner_exit_code=code)
         save()
+        wait_for_idle(coordinator, workspace)
         state = supervisor.request("POST", path, {"action": "current"})
         action, stalls = next_step(code, state, stalls)
         progress.update(request=state["request"], stalls=stalls, last_action=action)

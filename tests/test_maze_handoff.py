@@ -28,6 +28,15 @@ class Supervisor(unittest.TestCase):
         self.assertEqual(template_session.next_step(0, {"open": False, "submitted": True}, 0)[0], "finished")
 
 
+    def test_only_active_tasks_inside_the_workspace_block_the_handoff(self):
+        class Coordinator:
+            def request(self, method, path):
+                return {"tasks": [{"active": "a1", "cwd": "D:\\work\\ws1\\maze_game"}, {"active": "a2", "cwd": "D:\\work\\ws2\\maze_game"},
+                                  {"active": None, "cwd": "D:\\work\\ws1\\maze_game"}]}
+        found = template_session.active_tasks(Coordinator(), "D:\\work\\ws1\\maze_game")
+        self.assertEqual([task["active"] for task in found], ["a1"])
+
+
 class PlannerCommands(unittest.TestCase):
     def test_codex_runs_ephemeral_unless_resumable_and_resumes_by_thread(self):
         argv, _, capture = template_planner.plan("sol_6_1_light", CODEX, False, {}, None)
