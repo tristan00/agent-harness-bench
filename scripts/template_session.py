@@ -47,11 +47,6 @@ def main():
     prompt_file = root / "planner-prompt.txt"
     prompt_file.write_bytes(profile["template_prompt"].encode("utf-8"))
     coordinator = Client(profile["coordinator_url"])
-    coordinator.request("POST", "/api/benchmark-runs", {
-        "workspace": str(workspace), "group": profile["workspace_group"],
-        "settings": profile["workspace"],
-        "run_id": started["run"]["id"], "deadline_ms": started["run"]["deadline_ms"],
-    })
     env = agent_environment(**profile.get("env", {}))
     for key in ["HARNESS_WORKFLOW_REQUEST", "CODEX_WINDOWS_REGISTERED_CORE"]:
         env.pop(key, None)
@@ -107,7 +102,7 @@ def main():
         if action == "finished":
             break
         if action == "stop":
-            supervisor.request("POST", path, {"action": "stop", "reason": f"{STALL_LIMIT} planner exits without a new submission"})
+            supervisor.request("POST", path, {"action": "stop"})
             break
         if action == "advance":
             message = supervisor.request("POST", path, {"action": "advance"})["next"]

@@ -62,7 +62,7 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_config(config)
         config = copy.deepcopy(CONFIG)
-        config["judge_selection"] = "astra_xhigh"
+        config["judge_selections"]["codex"] = "astra_xhigh"
         with self.assertRaises(ValueError):
             validate_config(config)
 

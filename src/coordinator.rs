@@ -13,20 +13,42 @@ pub struct Workflow {
     pub deadline_ms: i64,
 }
 
-pub fn stop_shared(root: &Path, id: &str) -> Result<()> {
-    let path = root.join("coordinator").join(id).join("launch.json");
-    if !path.exists() { return Ok(()); }
-    let launch: Value = serde_json::from_slice(&fs::read(path)?)?;
-    let Some(url) = launch["profile"]["coordinator_url"].as_str() else { return Ok(()); };
+fn curl(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("curl");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let output = command.args(["-q", "--silent", "--show-error", "--fail", "--max-time", "2", "--noproxy", "*",
-        "-H", "Content-Type: application/json", "-d", "{}", &format!("{url}/api/benchmark-runs/{id}/stop")]).output()?;
-    if !output.status.success() { return Err(format!("shared coordinator cleanup failed: {}", String::from_utf8_lossy(&output.stderr)).into()); }
+    let output = command.args(["-q", "--silent", "--show-error", "--fail", "--max-time", "5", "--noproxy", "*"]).args(args).output()?;
+    if !output.status.success() {
+        return Err(format!("coordinator request failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(output.stdout)
+}
+
+fn plain(path: &str) -> String {
+    path.trim_start_matches(r"\\?\").replace('/', r"\").trim_end_matches('\\').to_lowercase()
+}
+
+pub fn stop_workspace_tasks(root: &Path, id: &str) -> Result<()> {
+    let path = root.join("coordinator").join(id).join("launch.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let launch: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let (Some(url), Some(workspace)) = (launch["profile"]["coordinator_url"].as_str(), launch["profile"]["workspace_path"].as_str()) else {
+        return Ok(());
+    };
+    let workspace = plain(workspace);
+    let state: Value = serde_json::from_slice(&curl(&[&format!("{url}/api/state")])?)?;
+    for task in state["tasks"].as_array().into_iter().flatten() {
+        let cwd = plain(task["cwd"].as_str().unwrap_or_default());
+        let inside = cwd == workspace || cwd.starts_with(&format!("{workspace}\\"));
+        if inside && task["stage"] != "done" && task["stopped"] != true {
+            curl(&["-H", "Content-Type: application/json", "-d", "{}", &format!("{url}/api/tasks/{}/stop", task["id"].as_str().unwrap_or_default())])?;
+        }
+    }
     Ok(())
 }
 
@@ -55,12 +77,6 @@ pub fn profile(root: &Path, name: &str) -> Result<Value> {
         .get(name)
         .cloned()
         .ok_or("unknown coordinator profile")?;
-    for field in ["command", "coordinator_command", "planner_command"] {
-        argv(&value[field])?;
-    }
-    for field in ["implementation", "review", "replan"] {
-        argv(&value["workers"][field])?;
-    }
     Ok(value)
 }
 
@@ -106,4 +122,13 @@ pub fn launch(root: &Path, url: &str, started: &Value, profile: &Value) -> Resul
         deadline,
         deadline_ms,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn workspace_paths_compare_without_prefix_case_or_separator() {
+        assert_eq!(super::plain(r"\\?\D:\Work\WS1\"), r"d:\work\ws1");
+        assert_eq!(super::plain("D:/Work/ws1/chess960"), r"d:\work\ws1\chess960");
+    }
 }

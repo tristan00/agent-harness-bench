@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import time
 
-from agent_selection import claude_arguments, claude_environment, command_arguments, model_effort, resolve
+from agent_selection import claude_arguments, claude_environment, command_arguments, model_effort, resolve, detect_family
 from batch_metrics import aggregate, collect, read, score
 from harness import ApiError, Client, agent_environment, spawn_agent, stop_agent, write_json
 
@@ -57,7 +57,14 @@ def validate_config(config):
             raise ValueError(f"Invalid scoring configuration: {name}")
     if config["incomplete_token_fallback"] != "agent_seconds_per_development_second":
         raise ValueError("Unsupported token fallback")
-    model_effort(config["judge_selection"])
+    model_effort(judge_selection(config))
+
+
+def judge_selection(config):
+    family = detect_family()
+    if family not in config["judge_selections"]:
+        raise ValueError(f"Scoring configuration has no judge for the {family or 'undetected'} launcher family")
+    return config["judge_selections"][family]
 
 
 def judge_command(selection, prompt_path, output_path, browser_version):
@@ -183,7 +190,6 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--coordinator-data", type=Path, required=True)
     parser.add_argument("--url", default="http://127.0.0.1:8741")
-    parser.add_argument("--judge", required=True, choices=["sol_light"])
     parser.add_argument("--max-judges", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--config", type=Path, default=ROOT / "scoring-v1.json")
@@ -194,8 +200,7 @@ def main():
     args.data = args.data.resolve()
     config = read(args.config)
     validate_config(config)
-    if config["judge_selection"] != args.judge:
-        parser.error("judge selection must match scoring config")
+    args.judge = judge_selection(config)
     output = (args.output or args.data / "batch-scores" / args.batch / config["version"]).resolve()
     output.mkdir(parents=True, exist_ok=True)
     with output_lock(output / ".scoring.lock"):

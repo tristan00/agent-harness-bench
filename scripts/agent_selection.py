@@ -8,8 +8,6 @@ PAIRS = {("openai", "codex"), ("anthropic", "claude_code")}
 VENDOR = {"anthropic": "claude", "openai": "codex"}
 CODEX_MARKERS = ["CODEX_WINDOWS_REGISTERED_CORE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
                  "CODEX_MANAGED_BY_NPM", "CODEX_MANAGED_BY_BUN"]
-PLANNER_CANDIDATES = {name: (agent["model"], agent["effort"]) for name, agent in CATALOG.items()
-                      if agent["provider"] == "openai" and not agent.get("retired")}
 
 
 def detect_family(environ=None):
@@ -20,6 +18,14 @@ def detect_family(environ=None):
     claude = environ.get("CLAUDECODE") == "1" or bool(environ.get("CLAUDE_CODE_ENTRYPOINT"))
     codex = any(environ.get(name) for name in CODEX_MARKERS)
     return "claude" if claude and not codex else "codex" if codex and not claude else None
+
+
+def planner_candidates(family=None):
+    family = detect_family() if family is None else family
+    if family not in {"claude", "codex"}:
+        raise ValueError("Start from Claude Code or Codex, or set AGENT_FAMILY to claude or codex")
+    return {name: (agent["model"], agent["effort"]) for name, agent in CATALOG.items()
+            if VENDOR[agent["provider"]] == family and not agent.get("retired")}
 
 
 def resolve(selection, family=None, retired=False):
@@ -94,7 +100,7 @@ def expand_command(command, selection):
 
 def planner_command(command, selection):
     workspace_agent(selection)
-    adapters = {Path(__file__).with_name(name).resolve() for name in ("template_planner.py", "codex_planner.py")}
+    adapters = {Path(__file__).with_name(name).resolve() for name in ("template_planner.py",)}
     if len(command) == 2 and Path(command[1]).resolve() in adapters:
         return command
     return expand_command(command, selection)

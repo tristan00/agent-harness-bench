@@ -276,12 +276,6 @@ def main():
     start.add_argument("campaign")
     start.add_argument("agent")
     start.add_argument("--out", type=Path)
-    coordinated = sub.add_parser("run-coordinator", help="Launch a service-owned iterative coordinator run")
-    coordinated.add_argument("campaign")
-    coordinated.add_argument("agent")
-    coordinated.add_argument("--profile", required=True)
-    workflow = sub.add_parser("workflow", help="Read coordinator progress and accepted iterations")
-    workflow.add_argument("run")
     batch = sub.add_parser("benchmark-batch", help="Queue all three benchmarks for every supplied workspace")
     batch.add_argument("config", type=Path)
     batch_status = sub.add_parser("batch-status")
@@ -329,11 +323,6 @@ def main():
         result = client.request("POST", "/v1/runs", {"campaign_id": args.campaign, "agent": args.agent})
         if args.out:
             write_json(args.out, result)
-    elif args.command == "run-coordinator":
-        result = client.request("POST", "/v1/coordinator-runs", {"campaign_id": args.campaign, "agent": args.agent, "profile": args.profile})
-    elif args.command == "workflow":
-        result = client.request("GET", f"/v1/runs/{args.run}/coordinator")
-        result.update(client.request("GET", f"/v1/runs/{args.run}/iterations"))
     elif args.command == "benchmark-batch":
         result = client.request("POST", "/v1/benchmark-batches", json.loads(args.config.read_text(encoding="utf-8-sig")))
     elif args.command == "batch-status":

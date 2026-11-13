@@ -482,7 +482,7 @@ mod tests {
         let path = format!("/v1/runs/{id}/handoff");
         service.route("POST", &format!("/v1/runs/{id}/submissions"), &token, json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
         service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
-        service.route("POST", &path, &handoff, json!({"action":"stop","reason":"no progress"})).unwrap();
+        service.route("POST", &path, &handoff, json!({"action":"stop"})).unwrap();
         service.tick().unwrap();
         assert_eq!(service.db().run(&id).unwrap().status, "frozen");
         let db = service.db();
@@ -702,7 +702,7 @@ impl Service {
         let stopped = workflows.len();
         for (id, workflow) in workflows.drain() {
             workflow.child.tree.stop();
-            if let Err(error) = coordinator::stop_shared(&self.root, &id) {
+            if let Err(error) = coordinator::stop_workspace_tasks(&self.root, &id) {
                 errors.push(error.to_string());
             }
         }
@@ -743,7 +743,7 @@ impl Service {
                     .ok_or("invalid workflow")?
                     .to_owned();
                 workflow["status"] = json!("interrupted");
-                if let Err(error) = coordinator::stop_shared(&self.root, &id) { eprintln!("{error}"); }
+                if let Err(error) = coordinator::stop_workspace_tasks(&self.root, &id) { eprintln!("{error}"); }
                 workflow["error"] =
                     json!("Service restarted; last accepted completion is retained for scoring");
                 db.save_workflow(&id, &workflow)?;
@@ -826,7 +826,7 @@ impl Service {
             }
             for (id, _, _) in &finished {
                 workflows.remove(id);
-                if let Err(error) = coordinator::stop_shared(&self.root, id) { eprintln!("{error}"); }
+                if let Err(error) = coordinator::stop_workspace_tasks(&self.root, id) { eprintln!("{error}"); }
             }
         }
         // Kill without acquiring the protocol mutex: a hung action cannot postpone termination.
@@ -1325,11 +1325,6 @@ impl Service {
                 self.admin(token)?;
                 Ok(json!({"batch":self.append_dashboard(id, body)?}))
             }
-            ("POST", ["v1", "benchmark-batches", id, "retry"]) => {
-                self.admin(token)?;
-                let name = body["benchmark"].as_str().ok_or_else(|| ApiError(400, "benchmark required".into()))?;
-                Ok(json!({"batch":self.retry_benchmark(id, name)?}))
-            }
             ("GET", ["v1", "runs", id, "task"]) => {
                 self.run_auth(id, token)?;
                 let db = self.db();
@@ -1346,12 +1341,6 @@ impl Service {
             ("GET", ["health"]) => Ok(
                 json!({"status":"ok","service":"agent-harness-bench","protocol_version":1,"server_time_ms":now_ms()}),
             ),
-            ("GET", ["v1", "benchmarks"]) => {
-                self.admin(token)?;
-                Ok(
-                    json!({"benchmarks":["chess960","game_build","dataset_dashboard","maze_game"],"maze_defaults":Config{benchmark:Benchmark::MazeGame,development_seconds:1800,judge_seconds:600,..Config::default()},"prompt_version":prompts::VERSION,"chess_defaults":Config::default(),"game_defaults":Config{benchmark:Benchmark::GameBuild,development_seconds:1800,..Config::default()},"dashboard_defaults":Config{benchmark:Benchmark::DatasetDashboard,development_seconds:900,..Config::default()},"datasets":crate::datasets::registry()}),
-                )
-            }
             ("POST", ["v1", "campaigns"]) => {
                 self.admin(token)?;
                 let mut config: Config = serde_json::from_value(body.clone())?;
@@ -1442,58 +1431,6 @@ impl Service {
                 c.status = "scoring_requested".into();
                 db.save_campaign(&c)?;
                 Ok(json!({"campaign":c}))
-            }
-            ("GET", ["v1", "campaigns", id, "games"]) => {
-                self.admin(token)?;
-                Ok(json!({"games":self.db().games(id)?}))
-            }
-            ("GET", ["v1", "coordinator-profiles"]) => {
-                self.admin(token)?;
-                let profiles = coordinator::profiles(&self.root)?;
-                Ok(json!({"profiles":profiles.as_object().unwrap().keys().collect::<Vec<_>>()}))
-            }
-            ("POST", ["v1", "coordinator-runs"]) => {
-                self.admin(token)?;
-                let name = body["profile"]
-                    .as_str()
-                    .ok_or_else(|| ApiError(400, "profile required".into()))?;
-                let profile = coordinator::profile(&self.root, name)?;
-                if !crate::batch::allowed_agents(&profile["workspace"]) {
-                    return Err(ApiError(400, "profile.workspace requires explicit eligible planner and worker selections".into()));
-                }
-                let url = self
-                    .address
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .ok_or_else(|| ApiError(503, "HTTP service is not running".into()))?;
-                let started = self.route("POST", "/v1/runs", token, body.clone())?;
-                let id = started["run"]["id"].as_str().unwrap();
-                let mut workflows = self.workflows.lock().unwrap();
-                let mut record =
-                    json!({"run_id":id,"profile":name,"status":"running","started_at_ms":now_ms()});
-                self.db().save_workflow(id, &record)?;
-                match coordinator::launch(&self.root, &url, &started, &profile) {
-                    Ok(workflow) => {
-                        workflows.insert(id.into(), workflow);
-                    }
-                    Err(error) => {
-                        record["status"] = json!("failed");
-                        record["error"] = json!(error.to_string());
-                        self.db().save_workflow(id, &record)?;
-                    }
-                }
-                self.db().event(Some(id), "coordinator_started", &record)?;
-                Ok(json!({"run":started["run"],"workflow":record,"server_time_ms":now_ms()}))
-            }
-            ("GET", ["v1", "runs", id, "coordinator"]) => {
-                self.run_auth(id, token)?;
-                let workflow = self.db().workflow(id)?;
-                let progress =
-                    fs::read(self.root.join("coordinator").join(id).join("progress.json"))
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-                Ok(json!({"workflow":workflow,"progress":progress,"server_time_ms":now_ms()}))
             }
             ("GET", ["v1", "runs", id, "iterations"]) => {
                 self.run_auth(id, token)?;
@@ -1586,7 +1523,7 @@ impl Service {
                             db.event(Some(id), "request_completed", &json!({"request":current,"submission_id":run.submission_id,"completed_at_ms":now,"elapsed_ms":now - run.started_at_ms}))?;
                             next = requests.get(current).map(|text| prompts::maze_follow_up(text));
                         } else {
-                            db.event(Some(id), "handoff_stopped", &json!({"request":current,"reason":body["reason"],"at_ms":now}))?;
+                            db.event(Some(id), "handoff_stopped", &json!({"request":current,"at_ms":now}))?;
                         }
                         if next.is_none() {
                             run.deadline_ms = now;

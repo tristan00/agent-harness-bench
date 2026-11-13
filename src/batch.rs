@@ -85,96 +85,6 @@ fn workspace_documents(path: &Path, settings: &Value) -> Result<Vec<(&'static st
 }
 
 impl Service {
-    pub(crate) fn retry_benchmark(&self, id: &str, name: &str) -> Result<Value> {
-        let _guard = self.batch_lock.lock().unwrap();
-        let db = self.db();
-        let mut batch = db.batch(id)?;
-        let campaign_id = batch["campaigns"][name]
-            .as_str()
-            .ok_or("benchmark not in batch")?;
-        let mut campaign = db.campaign(campaign_id)?;
-        let cases = batch["cases"].as_array().ok_or("invalid cases")?;
-        let selected: Vec<_> = cases
-            .iter()
-            .filter(|case| case["benchmark"] == name)
-            .cloned()
-            .collect();
-        if selected.is_empty()
-            || selected
-                .iter()
-                .any(|case| case["status"] == "running" || case["status"] == "queued")
-        {
-            return Err("retry requires finished or stopped cases".into());
-        }
-        let profile_name = batch["profile"].as_str().ok_or("missing profile")?;
-        let profile = coordinator::profile(&self.root, profile_name)?;
-        let coordinator_url = profile["coordinator_url"]
-            .as_str()
-            .ok_or("shared coordinator_url required")?;
-        let previous_campaign = campaign.id.clone();
-        campaign.id = crate::id();
-        campaign.status = "enrolling".into();
-        campaign.created_at_ms = now_ms();
-        campaign.enrollment_deadline_ms = i64::MAX;
-        if name == "game_build" { campaign.themes.clear(); }
-        if name == "chess960" && batch["chess_seed_explicit"] == false {
-            campaign.config.seed = crate::random_seed();
-        }
-        for case in batch["cases"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .filter(|case| case["benchmark"] == name)
-        {
-            let folder = format!("{name}_{}", &campaign.id[..8]);
-            let directory = Path::new(case["workspace"].as_str().unwrap()).join(&folder);
-            let relative = Path::new(case["workspace_name"].as_str().unwrap())
-                .parent()
-                .ok_or("invalid workspace name")?
-                .join(folder);
-            if directory.exists() {
-                return Err("retry directory already exists".into());
-            }
-            workspace_documents(Path::new(case["workspace"].as_str().unwrap()), &case["settings"])?;
-            if !allowed_agents(&case["settings"]) { return Err("Retry requires eligible explicit workspace agent selections".into()); }
-            case["directory"] = json!(plain(&directory));
-            case["workspace_name"] = json!(relative);
-            case["campaign_id"] = json!(campaign.id);
-            case["status"] = json!("queued");
-            match name {
-                "game_build" => case["inspiration"] = json!(prompts::random_inspiration()),
-                "dataset_dashboard" => case["dataset"] = json!(crate::datasets::random_assignment()),
-                _ => {}
-            }
-            for field in ["run_id", "error", "started_at_ms", "ended_at_ms"] {
-                case.as_object_mut().unwrap().remove(field);
-            }
-        }
-        if batch.get("previous_cases").is_none() {
-            batch["previous_cases"] = json!([]);
-        }
-        batch["previous_cases"]
-            .as_array_mut()
-            .unwrap()
-            .extend(selected);
-        if batch.get("previous_campaigns").is_none() {
-            batch["previous_campaigns"] = json!([]);
-        }
-        batch["previous_campaigns"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!(previous_campaign));
-        batch["campaigns"][name] = json!(campaign.id);
-        batch["profile_config"]["coordinator_url"] = json!(coordinator_url);
-        batch["status"] = json!("running");
-        batch.as_object_mut().unwrap().remove("ended_at_ms");
-        let tx = db.db.unchecked_transaction()?;
-        db.save_campaign(&campaign)?;
-        db.save_batch(&batch)?;
-        tx.commit()?;
-        Ok(public(&batch))
-    }
-
     pub(crate) fn append_dashboard(&self, id: &str, mut config: Value) -> Result<Value> {
         let _guard = self.batch_lock.lock().unwrap();
         let db = self.db();
@@ -587,7 +497,7 @@ impl Service {
                 if let Some(workflow) = workflows.remove(run_id) {
                     workflow.child.tree.stop();
                 }
-                coordinator::stop_shared(&self.root, run_id)?;
+                coordinator::stop_workspace_tasks(&self.root, run_id)?;
                 let mut record = db.workflow(run_id)?.ok_or("missing workflow")?;
                 record["status"] = json!("stopped");
                 record["ended_at_ms"] = json!(now_ms());
@@ -645,9 +555,8 @@ mod tests {
         let root = crate::test_support::dir();
         let service = Service::open(root.path()).unwrap();
         fs::write(root.path().join("coordinator-profiles.json"), json!({"fixture":{
-            "command":["unused"],"coordinator_command":["unused"],"planner_command":["unused"],
-            "session_command":["unused"],"session_planner_command":["unused"],"coordinator_url":"http://127.0.0.1:1",
-            "workers":{"implementation":["unused"],"review":["unused"],"replan":["unused"]}}}).to_string()).unwrap();
+            
+            "session_command":["unused"],"session_planner_command":["unused"],"coordinator_url":"http://127.0.0.1:1"}}).to_string()).unwrap();
         let workspaces = root.path().join("workspaces");
         fs::create_dir(&workspaces).unwrap();
         let mut selected = Vec::new();
@@ -698,20 +607,5 @@ mod tests {
         unconfigured["path"] = json!(missing);
         assert!(reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
             "workspaces":[unconfigured],"benchmarks":["maze_game"]})).unwrap_err().to_string().contains("follow_ups"));
-        let mut stopped = reopened.db().batch(&id).unwrap();
-        stopped["status"] = json!("stopped");
-        for case in stopped["cases"].as_array_mut().unwrap() { case["status"] = json!("stopped"); }
-        reopened.db().save_batch(&stopped).unwrap();
-        for (benchmark, field) in [("game_build", "inspiration"), ("dataset_dashboard", "dataset")] {
-            let retried = reopened.retry_benchmark(&id, benchmark).unwrap();
-            for case in retried["cases"].as_array().unwrap().iter().filter(|case| case["benchmark"] == benchmark) {
-                let original = stopped["cases"].as_array().unwrap().iter().find(|old| old["workspace"] == case["workspace"] && old["benchmark"] == benchmark).unwrap();
-                assert_ne!(case[field]["seed"], original[field]["seed"]);
-            }
-        }
-        let chess_id = stopped["campaigns"]["chess960"].as_str().unwrap();
-        let original_seed = reopened.db().campaign(chess_id).unwrap().config.seed;
-        let retried = reopened.retry_benchmark(&id, "chess960").unwrap();
-        assert_ne!(reopened.db().campaign(retried["campaigns"]["chess960"].as_str().unwrap()).unwrap().config.seed, original_seed);
     }
 }

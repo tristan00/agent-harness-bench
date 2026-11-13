@@ -13,6 +13,7 @@ import time
 import urllib.request
 
 from harness import ApiError, Client, snapshot
+from agent_selection import planner_candidates
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,8 +85,6 @@ def main():
             rejects(admin, "POST", "/v1/runs", {"campaign_id": campaign["id"], "agent": "late"}, 409)
             result = wait_for(lambda: ac.request("GET", f'/v1/runs/{a["run"]["id"]}')["report"])
             bad_result = bc.request("GET", f'/v1/runs/{b["run"]["id"]}')["report"]
-            games = admin.request("GET", f'/v1/campaigns/{campaign["id"]}/games')["games"]
-            assert len(games) == 12
             assert result["metrics"]["artifact_sha256"] == final_snapshot["sha256"]
             assert result["metrics"]["lines_of_code"] > 0
             assert bad_result["metrics"]["forfeits"] == 6
@@ -100,7 +99,8 @@ def main():
                 "enrollment_seconds": 60, "positions": 1, "max_plies": 4, "baselines": False,
                 "pool_run_ids": [a["run"]["id"]]})["campaign"]
             selections = data / "workspace-settings.json"
-            selections.write_text(json.dumps({"planner":"sol_6_1_light","worker":"sol_6_1_light"}))
+            candidate = next(iter(planner_candidates()))
+            selections.write_text(json.dumps({"planner":candidate,"worker":candidate}))
             adapter_work = data / "builder-work"
             fake_builder = "import shutil,subprocess,sys,time;shutil.copytree(" + repr(str(ROOT / 'examples' / 'chess_python')) + ",'.',dirs_exist_ok=True);subprocess.Popen([sys.executable,'-c',\"import time,pathlib;time.sleep(3);pathlib.Path('escaped').write_text('bad')\"]);time.sleep(60)"
             started_at = time.monotonic()

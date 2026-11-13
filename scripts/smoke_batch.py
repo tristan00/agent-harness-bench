@@ -12,7 +12,7 @@ import tempfile
 import time
 
 from harness import Client
-from agent_selection import PLANNER_CANDIDATES
+from agent_selection import planner_candidates
 from smoke import rejects, wait_for
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,10 +34,8 @@ def main():
         template = data / "template.txt"
         template.write_text("Task {benchmark_task}\nWorkspace: " + str(workspace_root / "{workspace_name}") + "\n", encoding="utf-8")
         worker = [sys.executable, str(ROOT / "tests/template_fixture.py"), "worker", "--model", "{model}", "--effort", "{effort}"]
-        profile = {"command": ["unused"], "planner_command": ["unused"],
-                   "coordinator_command": [str(args.coordinator.resolve())],
-                   "workers": {k: worker for k in ["implementation", "review", "replan"]}, "capabilities": ["process"],
-                   "session_command": [sys.executable, str(ROOT / "scripts/template_session.py")],
+        workers = {k: worker for k in ["implementation", "review", "replan"]}
+        profile = {"session_command": [sys.executable, str(ROOT / "scripts/template_session.py")],
                    "session_planner_command": [sys.executable, str(ROOT / "tests/template_fixture.py"), "plan", "--model", "{model}", "--effort", "{effort}"]}
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -52,14 +50,19 @@ def main():
         flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
         def launch():
             return subprocess.Popen([str(args.binary.resolve()), "serve", "--bind", f"127.0.0.1:{port}", "--data", str(data)], stdout=log, stderr=log, **flags)
+        registered = {}
+        def register():
+            board_client.request("PUT", "/api/config", {**workers, "capabilities": ["process"], "notify": [], "workspaces": registered})
         def config(prefix, cap=2, seconds=8, count=2):
             workspaces = []
             for index in range(count):
                 path = workspace_root / f"{prefix}-{index}"
                 path.mkdir()
-                planners = list(PLANNER_CANDIDATES)
+                planners = list(planner_candidates())
                 settings = selected_documents(path, {"planner": planners[index % len(planners)], "worker": planners[(index + 1) % len(planners)], "updates": "events" if index else "poll", "limits": {"words": 140 + index}})
                 workspaces.append({"path": str(path), "settings": settings})
+                registered[str(path)] = settings
+            register()
             return {"profile": "fixture", "template_path": str(template), "workspace_root": str(workspace_root),
                     "workspaces": workspaces, "max_parallel": cap, "order_seed":960,
                     "benchmarks": ["chess960", "game_build", "dataset_dashboard"],
@@ -72,13 +75,15 @@ def main():
             assert all(p.read_text() == text for p, text in before.items()), "descendant survived termination"
         board = subprocess.Popen([str(args.coordinator.resolve())], env={**os.environ, "COORDINATOR_DATA": str(data / "shared-board"), "PORT": str(board_port)}, stdout=log, stderr=log, **flags)
         board_client = Client(profile["coordinator_url"])
-        wait_for(lambda: board_client.request("GET", "/api/state"))
-        unrelated = data / "unrelated"
-        unrelated.mkdir()
-        board_client.request("PUT", "/api/config", {**profile["workers"], "capabilities": ["process"], "notify": [], "workspaces": {str(unrelated): selected_documents(unrelated)}})
-        board_client.request("POST", "/api/tasks", {"title":"Pending", "outcome":"Keep fixture running", "cwd":str(unrelated), "standalone":True, "acceptance":["Running"], "attributes":{"lane":"code"}})
-        service = launch()
+        service = None
         try:
+            wait_for(lambda: board_client.request("GET", "/api/state"))
+            unrelated = data / "unrelated"
+            unrelated.mkdir()
+            registered[str(unrelated)] = selected_documents(unrelated)
+            register()
+            board_client.request("POST", "/api/tasks", {"title":"Pending", "outcome":"Keep fixture running", "cwd":str(unrelated), "standalone":True, "acceptance":["Running"], "attributes":{"lane":"code"}})
+            service = launch()
             wait_for(lambda: client.request("GET", "/health"))
             client.token = (data / "admin-token").read_text()
             wait_for(lambda: (unrelated / "worker.pulse").exists())
@@ -104,7 +109,7 @@ def main():
                 rejects(client, "POST", f"/v1/campaigns/{campaign}/score", {}, 409)
             for case in [case for case in first["cases"] if case["status"] == "running"]:
                 wait_for(lambda: (Path(case["directory"]) / "worker.pulse").exists(), timeout=6)
-                wait_for(lambda: client.request("GET", f'/v1/runs/{case["run_id"]}/coordinator')["progress"]["phase"] == "planner_exited", timeout=3)
+                wait_for(lambda: json.loads((data / "coordinator" / case["run_id"] / "progress.json").read_text())["phase"] == "planner_exited", timeout=3)
                 assert status(batch)["cases"][first["cases"].index(case)]["status"] == "running"
             peak = 0
             until = time.monotonic() + 34
@@ -182,7 +187,8 @@ def main():
             shutil.copytree(data, args.evidence.parent / "failed-batch-smoke", dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.lock", "benchmark.sqlite3*"))
             raise
         finally:
-            service.terminate(); service.wait(timeout=5)
+            if service:
+                service.terminate(); service.wait(timeout=5)
             for task in board_client.request("GET", "/api/state")["tasks"]:
                 if task["active"]:
                     board_client.request("POST", f'/api/tasks/{task["id"]}/stop', {})
