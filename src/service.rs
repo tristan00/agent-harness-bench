@@ -462,6 +462,21 @@ mod tests {
         assert_eq!(service.route("POST", &other_path, &admin, json!({"action":"current"})).unwrap_err().0, 409);
     }
     #[test]
+    fn wipe_deletes_every_run_and_submission_after_explicit_confirmation() {
+        let (root, service, admin, _chess) = setup();
+        let (id, token, _) = maze_campaign(&service, &admin);
+        service.route("POST", &format!("/v1/runs/{id}/submissions"), &token, json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
+        assert!(root.path().join("submissions").exists());
+        assert_eq!(service.route("POST", "/v1/admin/wipe", &token, json!({"confirm":"wipe everything"})).unwrap_err().0, 401);
+        assert!(service.route("POST", "/v1/admin/wipe", &admin, json!({})).unwrap_err().1.contains("wipe everything"));
+        let report = service.route("POST", "/v1/admin/wipe", &admin, json!({"confirm":"wipe everything"})).unwrap();
+        assert_eq!((report["deleted"]["submissions"].as_u64(), report["deleted"]["runs"].as_u64(), report["deleted"]["campaigns"].as_u64()), (Some(1), Some(1), Some(2)));
+        assert_eq!(report["errors"], json!([]));
+        assert!(!root.path().join("submissions").exists());
+        assert!(service.db().campaigns().unwrap().is_empty() && service.db().all_runs().unwrap().is_empty());
+        assert!(service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"chess960"})).is_ok());
+    }
+    #[test]
     fn maze_handoff_stop_freezes_and_judging_scores_received_requests() {
         let (_root, service, admin, _chess) = setup();
         let (id, token, handoff) = maze_campaign(&service, &admin);
@@ -680,6 +695,45 @@ impl Service {
         });
         service.recover()?;
         Ok(service)
+    }
+    pub(crate) fn wipe(&self, body: &Value) -> Result<Value> {
+        if body["confirm"] != "wipe everything" {
+            return Err("Send {\"confirm\":\"wipe everything\"}; this permanently deletes every batch, campaign, run, submission, judgment, report, game and event with no backup".into());
+        }
+        let _batches = self.batch_lock.lock().unwrap();
+        let mut workflows = self.workflows.lock().unwrap();
+        let mut errors = Vec::new();
+        let stopped = workflows.len();
+        for (id, workflow) in workflows.drain() {
+            workflow.child.tree.stop();
+            if let Err(error) = coordinator::stop_shared(&self.root, &id) {
+                errors.push(error.to_string());
+            }
+        }
+        for (_, session) in self.sessions.lock().unwrap().drain() {
+            session.tree.stop();
+        }
+        let mut deleted = serde_json::Map::new();
+        {
+            let db = self.db();
+            let tx = db.db.unchecked_transaction()?;
+            for table in ["iterations", "workflows", "events", "games", "reports", "judgments", "submissions", "runs", "campaigns", "batches"] {
+                deleted.insert(table.into(), json!(tx.execute(&format!("DELETE FROM {table}"), [])?));
+            }
+            tx.commit()?;
+        }
+        drop(workflows);
+        let mut removed = Vec::new();
+        for name in ["submissions", "work", "coordinator", "batch-scores"] {
+            let path = self.root.join(name);
+            if path.exists() {
+                match fs::remove_dir_all(&path) {
+                    Ok(()) => removed.push(name),
+                    Err(error) => errors.push(format!("{}: {error}", path.display())),
+                }
+            }
+        }
+        Ok(json!({"deleted":deleted,"stopped_planners":stopped,"removed":removed,"errors":errors}))
     }
     pub(crate) fn db(&self) -> MutexGuard<'_, Store> {
         self.store.lock().expect("database mutex poisoned")
@@ -1262,6 +1316,10 @@ impl Service {
             ("GET", ["v1", "benchmark-batches", id]) => {
                 self.admin(token)?;
                 Ok(json!({"batch":crate::batch::public(&self.db().batch(id)?)}))
+            }
+            ("POST", ["v1", "admin", "wipe"]) => {
+                self.admin(token)?;
+                Ok(self.wipe(&body)?)
             }
             ("POST", ["v1", "benchmark-batches", id, "stop"]) => {
                 self.admin(token)?;
