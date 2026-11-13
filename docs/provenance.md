@@ -4,7 +4,7 @@
 
 `../chess960_rule_based_evaluator/chess960/src/engine.rs`
 
-The engine remains self-contained and retains its all-960-starts, perft, overlapping-castling, en-passant, promotion and draw tests. This project does not depend on the neighboring directory at build or runtime. The Elo formula was reviewed there and reimplemented independently with this service's records and explicit double-forfeit handling. `scripts/cargo-windows.ps1` was adapted from the same project's helper to support the installed toolchain and the dependencies in this project.
+The engine remains self-contained and retains its all-960-starts, perft, overlapping-castling, en-passant, promotion and draw tests. This project does not depend on the neighboring directory at build or runtime. The Elo formula was reviewed there and reimplemented independently with this service's records and explicit double-forfeit handling.
 
 The old project's rule-author restrictions do not apply to these benchmark entrants: the new preset prompt specifies only the input/output/runtime contract and evaluation rules, leaving implementation choices open.
 
