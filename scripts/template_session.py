@@ -7,7 +7,7 @@ import subprocess
 import time
 
 from harness import Client, agent_environment
-from agent_selection import coordinator_settings, detect_family, planner_command, workspace_settings
+from agent_selection import detect_family, planner_command, workspace_settings
 from workspace_prompts import documents
 
 STALL_LIMIT = 3
@@ -21,17 +21,6 @@ def next_step(exit_code, state, stalls):
         return "advance", 0
     stalls += 1
     return ("stop" if stalls >= STALL_LIMIT else "continue"), stalls
-
-
-def active_tasks(coordinator, workspace):
-    root = str(Path(workspace).resolve()).lower().lstrip("\\\\?\\")
-    tasks = coordinator.request("GET", "/api/state")["tasks"]
-    return [task for task in tasks if task.get("active") and str(task.get("cwd", "")).lower().lstrip("\\\\?\\").startswith(root)]
-
-
-def wait_for_idle(coordinator, workspace, pause=5):
-    while active_tasks(coordinator, workspace):
-        time.sleep(pause)
 
 
 def main():
@@ -49,7 +38,7 @@ def main():
     coordinator = Client(profile["coordinator_url"])
     coordinator.request("POST", "/api/benchmark-runs", {
         "workspace": str(workspace), "group": profile["workspace_group"],
-        "settings": coordinator_settings(settings),
+        "settings": profile["workspace"],
         "run_id": started["run"]["id"], "deadline_ms": started["run"]["deadline_ms"],
     })
     env = agent_environment(**profile.get("env", {}))
@@ -98,9 +87,8 @@ def main():
     stalls = 0
     while True:
         code = planner.wait()
-        progress.update(phase="waiting_for_workers", planner_exit_code=code)
+        progress.update(phase="planner_exited", planner_exit_code=code)
         save()
-        wait_for_idle(coordinator, workspace)
         state = supervisor.request("POST", path, {"action": "current"})
         action, stalls = next_step(code, state, stalls)
         progress.update(request=state["request"], stalls=stalls, last_action=action)

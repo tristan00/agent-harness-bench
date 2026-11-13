@@ -4,12 +4,12 @@ import shutil
 from pathlib import Path
 
 CATALOG = json.loads((Path(__file__).resolve().parents[1] / "agents.json").read_text(encoding="utf-8"))
-PAIRS = {("openai", "codex"), ("anthropic", "claude_code"), ("local", "openai_compatible")}
+PAIRS = {("openai", "codex"), ("anthropic", "claude_code")}
 VENDOR = {"anthropic": "claude", "openai": "codex"}
 CODEX_MARKERS = ["CODEX_WINDOWS_REGISTERED_CORE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
                  "CODEX_MANAGED_BY_NPM", "CODEX_MANAGED_BY_BUN"]
-WORKSPACE_CANDIDATES = {name: (agent["model"], agent["effort"]) for name, agent in CATALOG.items()
-                        if agent["provider"] == "openai" and not agent.get("retired")}
+PLANNER_CANDIDATES = {name: (agent["model"], agent["effort"]) for name, agent in CATALOG.items()
+                      if agent["provider"] == "openai" and not agent.get("retired")}
 
 
 def detect_family(environ=None):
@@ -22,24 +22,17 @@ def detect_family(environ=None):
     return "claude" if claude and not codex else "codex" if codex and not claude else None
 
 
-def allowed(agent, family):
-    return agent["provider"] == "local" or VENDOR.get(agent["provider"]) == family
-
-
-def resolve(selection, family=None, defined=None, retired=False):
+def resolve(selection, family=None, retired=False):
     family = detect_family() if family is None else family
-    agent = (defined or {}).get(selection) or CATALOG.get(selection)
+    agent = CATALOG.get(selection)
     if not agent:
         raise ValueError(f"Unknown agent {selection}")
     if (agent["provider"], agent["harness"]) not in PAIRS or not agent.get("model", "").strip():
         raise ValueError(f"Agent {selection} must run in its own vendor's harness")
-    if agent["provider"] == "local" and not str(agent.get("endpoint", "")).startswith(("http://127.0.0.1:", "http://localhost:", "http://[::1]:")):
-        raise ValueError(f"Local agent {selection} needs a loopback endpoint")
     if agent.get("retired") and not retired:
         raise ValueError(f"Agent {selection} is retired")
-    if not allowed(agent, family):
-        raise ValueError(f"Agent {selection} is not allowed when started by {family or 'an undetected launcher'}; "
-                         f"only {family or 'no hosted'} and local agents are enabled")
+    if VENDOR[agent["provider"]] != family:
+        raise ValueError(f"Agent {selection} is not allowed when started by {family or 'an undetected launcher'}")
     return dict(agent)
 
 
@@ -54,34 +47,8 @@ def workspace_agent(selection):
 
 
 def workspace_settings(value):
-    for role in ("planner", "worker"):
-        resolve(value.get(role), defined=value.get("agents"))
-    if resolve(value.get("planner"), defined=value.get("agents")).get("workerOnly"):
-        raise ValueError(f'Agent {value.get("planner")} can only be a worker')
-    listed = value.get("enabled_agents")
-    if listed is not None and (not isinstance(listed, list) or not all(isinstance(name, str) for name in listed)):
-        raise ValueError("enabled_agents must be a list of agent ids")
-    for name in listed or []:
-        resolve(name, defined=value.get("agents"))
+    resolve(value.get("planner"))
     return value
-
-
-def enabled_agents(settings, family=None):
-    family = detect_family() if family is None else family
-    listed = settings.get("enabled_agents")
-    if listed is None:
-        listed = [name for name, agent in CATALOG.items() if not agent.get("retired") and allowed(agent, family)]
-    return list(dict.fromkeys([*listed, settings["planner"], settings["worker"]]))
-
-
-def agent_definitions(settings, family=None):
-    return {name: resolve(name, family, settings.get("agents")) for name in enabled_agents(settings, family)}
-
-
-def coordinator_settings(settings, family=None):
-    registered = {key: value for key, value in settings.items() if key != "enabled_agents"}
-    registered["agents"] = agent_definitions(settings, family)
-    return registered
 
 
 def command_arguments(selection, retired=False):
@@ -108,13 +75,11 @@ def claude_executable(found=None):
     return found or "claude"
 
 
-def claude_arguments(agent, read_only=False):
+def claude_arguments(agent):
     argv = [os.environ.get("CLAUDE_BIN") or claude_executable(), "-p", "--model", agent["model"], "--output-format", "stream-json", "--verbose",
             "--no-session-persistence", "--dangerously-skip-permissions"]
     if agent.get("effort"):
         argv += ["--effort", agent["effort"]]
-    if read_only:
-        argv += ["--disallowedTools", "Edit", "Write", "NotebookEdit"]
     return argv
 
 

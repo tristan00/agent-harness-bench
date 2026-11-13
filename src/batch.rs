@@ -21,11 +21,7 @@ fn empty_object() -> Value {
 }
 
 pub(crate) fn allowed_agents(settings: &Value) -> bool {
-    let family = crate::agents::family();
-    let listed = settings.get("enabled_agents").map_or(Some(true), |list| list.as_array().map(|items| items.iter().all(|id| id.as_str().is_some_and(|id| crate::agents::allowed(id, family)))));
-    listed == Some(true)
-        && ["planner", "worker"].iter().all(|role| settings[role].as_str().is_some_and(|id| crate::agents::allowed(id, family)))
-        && settings["planner"].as_str().is_some_and(crate::agents::can_plan)
+    settings["planner"].as_str().is_some_and(|id| crate::agents::allowed(id, crate::agents::family()))
 }
 
 #[derive(Deserialize)]
@@ -618,20 +614,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn batch_agents_must_be_catalogued_and_allowed_for_the_launcher_family() {
-        assert!(!allowed_agents(&json!({"planner":"luna_6_high","worker":"sol_6_1_light"})));
+    fn batches_check_only_the_planner_agent_they_launch() {
         for planner in ["sol_6_1_light", "sol_6_1_medium"] {
-            for worker in ["luna_6_high", "sol_6_1_light", "sol_6_1_medium"] {
-                assert!(allowed_agents(&json!({"planner":planner,"worker":worker})));
-            }
+            assert!(allowed_agents(&json!({"planner":planner,"worker":"anything the coordinator accepts"})));
+            assert!(allowed_agents(&json!({"planner":planner})));
         }
-        assert!(allowed_agents(&json!({"planner":"local_qwen3_4b","worker":"sol_6_1_light"})));
-        assert!(allowed_agents(&json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","enabled_agents":["local_granite_3b","sol_6_1_medium"]})));
-        assert!(!allowed_agents(&json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","enabled_agents":["claude_haiku_5_5_low"]})));
-        assert!(!allowed_agents(&json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","enabled_agents":"local_granite_3b"})));
-        for invalid in [Value::Null, json!("sol_light"), json!("astra_xhigh"), json!("claude_haiku_5_5_low")] {
+        for invalid in [Value::Null, json!("sol_light"), json!("luna_6_high"), json!("local_qwen3_4b"), json!("claude_haiku_5_5_low")] {
             assert!(!allowed_agents(&json!({"planner":invalid,"worker":"sol_6_1_light"})));
-            assert!(!allowed_agents(&json!({"planner":"sol_6_1_light","worker":invalid})));
         }
     }
 

@@ -1,4 +1,3 @@
-import argparse
 import json
 import os
 from pathlib import Path
@@ -6,15 +5,12 @@ import subprocess
 import sys
 import tempfile
 
-from agent_selection import CATALOG, WORKSPACE_CANDIDATES, expand_command, workspace_settings
+from agent_selection import PLANNER_CANDIDATES, expand_command, workspace_settings
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests'))
 from prompt_fixture import selected_documents
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--coordinator', type=Path, required=True)
-    args = parser.parse_args()
     scripts = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix='agent-selection-') as directory:
         root = Path(directory)
@@ -25,16 +21,11 @@ def main():
                'HARNESS_CODEX_ARGS':'["--model","gpt-6-astra","-c","model_reasoning_effort=\\\"xhigh\\\""]',
                'HARNESS_PLANNER_PROMPT':str(prompt), 'HARNESS_PLANNER_REQUEST':str(request),
                'HARNESS_PLANNER_RESULT':str(result), 'COORDINATOR_REQUEST':str(request), 'COORDINATOR_RESULT':str(result)}
-        for selection,(model,effort) in WORKSPACE_CANDIDATES.items():
-            planner=selection if not CATALOG[selection].get('workerOnly') else 'sol_6_1_light'
-            settings=selected_documents(root, {'planner':planner,'worker':selection})
+        for selection,(model,effort) in PLANNER_CANDIDATES.items():
+            settings=selected_documents(root, {'planner':selection,'worker':selection})
             env['HARNESS_WORKSPACE_PLANNER']=selection
             commands=[([sys.executable,str(scripts/'template_planner.py')],{},'template planner'),
-                      ([sys.executable,str(scripts/'codex_planner.py')],{'workspace':str(root),'workspace_settings':settings},'legacy planner')] if planner==selection else []
-            for stage in ['implementation','review','replan']:
-                commands.append(([str(args.coordinator.resolve()),'--codex'],{'stage':stage,'worker':selection,'agent':CATALOG[selection],'family':'codex',
-                    'workerProtocol':{'text':'Selected worker instructions.'},'task':{'model':'gpt-6-astra','effort':'xhigh','cwd':str(root)},
-                    'scratch':str(root),'readOnly':stage!='implementation'},stage))
+                      ([sys.executable,str(scripts/'codex_planner.py')],{'workspace':str(root),'workspace_settings':settings},'legacy planner')]
             for command,payload,label in commands:
                 request.write_text(json.dumps(payload))
                 subprocess.run(command,cwd=root,env=env,check=True,capture_output=True,timeout=10)
@@ -44,18 +35,13 @@ def main():
                 assert not any('xhigh' in value or 'astra' in value for value in argv),(label,argv)
                 actual_prompt=Path(str(capture)+'.prompt').read_text()
                 if label=='legacy planner':assert 'Selected project_planner fixture' in actual_prompt
-                elif label!='template planner':assert 'Selected worker instructions.' in actual_prompt
             assert expand_command(['agent','--model','{model}','--effort','{effort}'],selection)==['agent','--model',model,'--effort',effort]
-            print(f'{selection}: both planner adapters and all three worker stages explicitly use {model} / {effort}')
-        for selection in [None,'sol_light','astra_light','astra_medium','sol_medium','astra_xhigh']:
+            print(f'{selection}: both planner adapters explicitly use {model} / {effort}')
+        for selection in [None,'sol_light','luna_6_high','local_qwen3_4b','claude_haiku_5_5_low','astra_xhigh']:
             try:
                 workspace_settings({'planner':selection,'worker':'sol_6_1_light'})
                 raise AssertionError('invalid candidate accepted')
             except ValueError:pass
-            request.write_text(json.dumps({'stage':'implementation','worker':selection,'workerProtocol':{'text':'Selected worker instructions.'},'task':{'cwd':str(root)}}))
-            capture.unlink(missing_ok=True)
-            rejected=subprocess.run([str(args.coordinator.resolve()),'--codex'],cwd=root,env=env,capture_output=True,timeout=10)
-            assert rejected.returncode!=0 and not capture.exists()
         try:
             expand_command(['agent'],'sol_6_1_light')
             raise AssertionError('implicit agent command accepted')

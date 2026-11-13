@@ -31,16 +31,10 @@ def plan(selection, agent, persistent, saved, message):
     session = saved.get("session") if message is not None else None
     if agent["harness"] == "codex":
         return codex_command(selection, persistent, session), saved, persistent and session is None
-    if agent["harness"] == "claude_code":
-        if persistent and session is None:
-            saved = {"harness": "claude_code", "session": str(uuid.uuid4())}
-            return [*claude_command(agent, True), "--session-id", saved["session"]], saved, False
-        return claude_command(agent, persistent, session), saved, False
-    command = [sys.executable, str(Path(__file__).with_name("local_agent.py")), agent["endpoint"], agent["model"]]
-    if persistent:
-        saved = {"harness": "openai_compatible", "session": saved.get("session") or os.environ["HARNESS_PLANNER_SESSION"] + ".messages.json"}
-        command += ["--session", saved["session"], *(["--resume"] if message is not None else [])]
-    return command, saved, False
+    if persistent and session is None:
+        saved = {"harness": "claude_code", "session": str(uuid.uuid4())}
+        return [*claude_command(agent, True), "--session-id", saved["session"]], saved, False
+    return claude_command(agent, persistent, session), saved, False
 
 
 def main():
