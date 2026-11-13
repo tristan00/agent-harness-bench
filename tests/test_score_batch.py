@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 os.environ["AGENT_FAMILY"] = "codex"
 from score_batch import judge_command, output_lock, review_case, validate_config
 
-CONFIG = json.loads((Path(__file__).resolve().parents[1] / "scoring-v1.json").read_text())
+CONFIG = json.loads((Path(__file__).resolve().parents[1] / "scoring.json").read_text())
 
 
 class RunnerTests(unittest.TestCase):

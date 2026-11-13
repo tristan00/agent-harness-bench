@@ -11,12 +11,10 @@ pub enum Benchmark {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub benchmark: Benchmark,
-    pub name: String,
     pub development_seconds: u64,
-    pub enrollment_seconds: u64,
     pub judge_seconds: u64,
     pub score_seconds: u64,
     pub build_seconds: u64,
@@ -27,7 +25,6 @@ pub struct Config {
     pub elo_k: f64,
     pub parallel_games: u16,
     pub baselines: bool,
-    pub pool_run_ids: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub follow_ups: Vec<String>,
 }
@@ -35,9 +32,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             benchmark: Benchmark::Chess960,
-            name: "benchmark".into(),
             development_seconds: 600,
-            enrollment_seconds: 60,
             judge_seconds: 300,
             score_seconds: 120,
             build_seconds: 120,
@@ -48,33 +43,33 @@ impl Default for Config {
             elo_k: 32.0,
             parallel_games: 8,
             baselines: true,
-            pool_run_ids: vec![],
             follow_ups: vec![],
         }
     }
 }
 impl Config {
+    pub fn new(benchmark: Benchmark, mut value: serde_json::Value) -> crate::Result<Self> {
+        if !value.is_object() {
+            return Err("task configuration must be an object".into());
+        }
+        if let Some(file) = value.as_object_mut().unwrap().remove("follow_ups_file") {
+            value["follow_ups"] = serde_json::from_str(&std::fs::read_to_string(file.as_str().ok_or("follow_ups_file must be a path")?)?)?;
+        }
+        let development = match benchmark {
+            Benchmark::Chess960 => 600,
+            Benchmark::DatasetDashboard => 900,
+            Benchmark::GameBuild | Benchmark::MazeGame => 1800,
+        };
+        value["benchmark"] = serde_json::json!(benchmark);
+        value.as_object_mut().unwrap().entry("development_seconds").or_insert(development.into());
+        if benchmark == Benchmark::MazeGame {
+            value.as_object_mut().unwrap().entry("judge_seconds").or_insert(600.into());
+        }
+        let config: Self = serde_json::from_value(value)?;
+        config.validate()?;
+        Ok(config)
+    }
     pub fn validate(&self) -> crate::Result<()> {
-        if self.name.is_empty() || self.name.len() > 200 {
-            return Err("name must have 1..200 bytes".into());
-        }
-        if self.pool_run_ids.len() > 16
-            || self
-                .pool_run_ids
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != self.pool_run_ids.len()
-            || self
-                .pool_run_ids
-                .iter()
-                .any(|id| uuid::Uuid::parse_str(id).is_err())
-        {
-            return Err("pool_run_ids must contain at most 16 distinct run UUIDs".into());
-        }
-        if self.benchmark != Benchmark::Chess960 && !self.pool_run_ids.is_empty() {
-            return Err("game campaigns do not use chess pools".into());
-        }
         if (self.benchmark == Benchmark::MazeGame) == self.follow_ups.is_empty()
             || self.follow_ups.len() > 32
             || self.follow_ups.iter().any(|text| text.trim().is_empty() || text.len() > 4000)
@@ -83,7 +78,6 @@ impl Config {
         }
         for (name, n, max) in [
             ("development_seconds", self.development_seconds, 86400),
-            ("enrollment_seconds", self.enrollment_seconds, 86400),
             ("judge_seconds", self.judge_seconds, 3600),
             ("score_seconds", self.score_seconds, 3600),
             ("build_seconds", self.build_seconds, 1800),
@@ -112,9 +106,7 @@ impl Config {
 pub struct Campaign {
     pub id: String,
     pub config: Config,
-    pub themes: Vec<String>,
     pub created_at_ms: i64,
-    pub enrollment_deadline_ms: i64,
     pub status: String,
 }
 
@@ -133,6 +125,25 @@ pub struct Run {
     pub submission_id: Option<String>,
     pub prepared_dir: Option<String>,
     pub error: Option<String>,
+}
+
+impl Run {
+    pub fn new(campaign: &Campaign, agent: &str, inspiration: Option<crate::prompts::Inspiration>, dataset: Option<crate::datasets::Assignment>) -> Self {
+        let now = crate::now_ms();
+        Self {
+            inspiration,
+            dataset,
+            id: crate::id(),
+            campaign_id: campaign.id.clone(),
+            agent: agent.into(),
+            status: "developing".into(),
+            started_at_ms: now,
+            deadline_ms: now + campaign.config.development_seconds as i64 * 1000,
+            submission_id: None,
+            prepared_dir: None,
+            error: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

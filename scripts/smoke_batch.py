@@ -11,13 +11,35 @@ import sys
 import tempfile
 import time
 
-from harness import Client
-from agent_selection import planner_candidates
-from smoke import rejects, wait_for
+from harness import ApiError, Client
+from agent_selection import CATALOG, VENDOR, detect_family
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 from prompt_fixture import selected_documents
+
+
+def wait_for(fn, timeout=40):
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            last = fn()
+            if last:
+                return last
+        except (OSError, ApiError):
+            pass
+        time.sleep(0.05)
+    raise AssertionError(f"condition did not complete: {last}")
+
+
+def rejects(client, method, path, body, code):
+    try:
+        client.request(method, path, body)
+    except ApiError as error:
+        assert error.status == code, str(error)
+    else:
+        raise AssertionError(f"{path} should reject with {code}")
 
 
 def main():
@@ -58,7 +80,7 @@ def main():
             for index in range(count):
                 path = workspace_root / f"{prefix}-{index}"
                 path.mkdir()
-                planners = list(planner_candidates())
+                planners = [name for name, agent in CATALOG.items() if VENDOR[agent["provider"]] == detect_family() and not agent.get("retired")]
                 settings = selected_documents(path, {"planner": planners[index % len(planners)], "worker": planners[(index + 1) % len(planners)], "updates": "events" if index else "poll", "limits": {"words": 140 + index}})
                 workspaces.append({"path": str(path), "settings": settings})
                 registered[str(path)] = settings
@@ -99,7 +121,7 @@ def main():
             (first_workspace / "PROJECT_PLANNER.md").write_text("word " * 201)
             rejects(client, "POST", "/v1/benchmark-batches", request, 400)
             (first_workspace / "PROJECT_PLANNER.md").write_bytes(selected)
-            assert not client.request("GET", "/v1/campaigns")["campaigns"]
+            assert not client.request("GET", "/v1/benchmark-batches")["batches"]
             batch = client.request("POST", "/v1/benchmark-batches", request)["batch"]
             assert "profile_config" not in batch and "template" not in batch
             (data / "coordinator-profiles.json").write_text("{}")
@@ -123,7 +145,6 @@ def main():
             assert current["status"] == "completed", current
             assert len(current["cases"]) == 6 and all(c["status"] == "deadline" for c in current["cases"]), current
             pids = set()
-            assert client.request("POST", f'/v1/benchmark-batches/{batch["id"]}/dashboard', {})["batch"]["cases"] == current["cases"]
             for case in current["cases"]:
                 directory = Path(case["directory"])
                 observed = json.loads((directory / "observed.json").read_text())

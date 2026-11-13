@@ -7,7 +7,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from harness import Client, snapshot
-from agent_selection import model_effort, workspace_agent
+from agent_selection import model_effort, resolve
 
 
 def pulse(path):
@@ -21,7 +21,8 @@ def main():
         return pulse(sys.argv[2])
     if sys.argv[1] == "worker":
         request = json.loads(Path(os.environ["COORDINATOR_REQUEST"]).read_text(encoding="utf-8"))
-        model, effort = model_effort(workspace_agent(request["worker"]))
+        resolve(request["worker"])
+        model, effort = model_effort(request["worker"])
         assert request["task"]["model"] == model
         assert request["task"]["effort"] == effort
         protocol = request["workerProtocol"]

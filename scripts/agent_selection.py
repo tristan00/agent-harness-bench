@@ -20,14 +20,6 @@ def detect_family(environ=None):
     return "claude" if claude and not codex else "codex" if codex and not claude else None
 
 
-def planner_candidates(family=None):
-    family = detect_family() if family is None else family
-    if family not in {"claude", "codex"}:
-        raise ValueError("Start from Claude Code or Codex, or set AGENT_FAMILY to claude or codex")
-    return {name: (agent["model"], agent["effort"]) for name, agent in CATALOG.items()
-            if VENDOR[agent["provider"]] == family and not agent.get("retired")}
-
-
 def resolve(selection, family=None, retired=False):
     family = detect_family() if family is None else family
     agent = CATALOG.get(selection)
@@ -45,11 +37,6 @@ def resolve(selection, family=None, retired=False):
 def model_effort(selection):
     agent = resolve(selection, retired=True)
     return agent["model"], agent.get("effort", "")
-
-
-def workspace_agent(selection):
-    resolve(selection)
-    return selection
 
 
 def workspace_settings(value):
@@ -89,18 +76,6 @@ def claude_arguments(agent):
     return argv
 
 
-def expand_command(command, selection):
-    model, effort = model_effort(selection)
-    if not isinstance(command, list) or not all(isinstance(arg, str) for arg in command):
-        raise ValueError("Agent command must be an argv array")
-    if "{model}" not in command or not any("{effort}" in arg for arg in command):
-        raise ValueError("Agent command must explicitly include {model} and {effort} placeholders")
-    return [arg.replace("{model}", model).replace("{effort}", effort) for arg in command]
-
-
 def planner_command(command, selection):
-    workspace_agent(selection)
-    adapters = {Path(__file__).with_name(name).resolve() for name in ("template_planner.py",)}
-    if len(command) == 2 and Path(command[1]).resolve() in adapters:
-        return command
-    return expand_command(command, selection)
+    agent = resolve(selection)
+    return [arg.replace("{model}", agent["model"]).replace("{effort}", agent.get("effort", "")) for arg in command]

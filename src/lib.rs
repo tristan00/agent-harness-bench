@@ -9,6 +9,7 @@ pub mod model;
 pub mod process;
 pub mod prompts;
 pub mod service;
+pub mod scoring;
 pub mod storage;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

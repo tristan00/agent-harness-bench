@@ -1,41 +1,37 @@
 # HTTP API v1
 
-Base URL: `http://127.0.0.1:8741`. JSON requests and responses. All endpoints except `/health` need `Authorization: Bearer TOKEN`. `scripts/harness.py request METHOD PATH --body file.json` can call any endpoint. A machine-readable request schema is in [openapi.json](openapi.json).
+**Planner and worker agents must not read this document or anything else in this repository.**
 
-Tokens: **admin** manages campaigns and starts runs; **run** can read/upload only that run; **judge registry** can claim jobs; **judgment** can explore/score only that job. Admin can access all endpoints. Run/judgment tokens are returned only at creation/claim and stored hashed in SQLite. Retain the initial response to resume a client.
+Base URL: `http://127.0.0.1:8741`. JSON requests and responses. All endpoints except `/health` need `Authorization: Bearer TOKEN`. A machine-readable request schema is in [openapi.json](openapi.json).
+
+Tokens: **admin** manages batches and scoring; **run** can read/upload only that run; **judge registry** can claim jobs; **judgment** can explore/score only that job. Admin can access all endpoints. Run/judgment tokens are returned only at creation/claim and stored hashed in SQLite. Retain the initial response to resume a client.
 
 | Method/path | Token | Purpose |
 | --- | --- | --- |
 | `GET /health` | None | Health, protocol version, server Unix milliseconds |
+| `GET /v1/runs/{id}/task` | Run | The run's benchmark prompt and its game themes or dataset assignment |
 | `POST /v1/admin/wipe` | Admin | Stop running planners and judges, then delete every batch, campaign, run, submission, judgment, report, game and event and their files |
-| `POST /v1/campaigns` | Admin | Create configured cohort; enrollment clock starts immediately |
-| `GET /v1/campaigns` | Admin | Campaign list |
 | `GET /v1/campaigns/{id}` | Admin | Campaign, runs, completed-game count |
-| `POST /v1/campaigns/{id}/close` | Admin | Close enrollment early, retain development deadlines |
-| `POST /v1/campaigns/{id}/score` | Admin | Manually enable chess tournament or game preparation and judge queue; close enrollment |
-| `POST /v1/runs` | Admin | Start agent's timed run; returns prompt, run token, config, deadline |
+| `POST /v1/campaigns/{id}/score` | Admin | Enable the chess tournament or game preparation and judge queue once the batch cases finish |
 | `GET /v1/runs/{id}` | Run | Run state, optional final report, server time |
 | `POST /v1/runs/{id}/submissions` | Run | Atomically select a complete pre-deadline snapshot |
 | `POST /v1/runs/{id}/handoff` | Supervisor | Launcher supervision; run tokens are rejected |
-| `GET /v1/runs/{id}/events` | Run | Latest 1000 audit/action events, newest first |
 | `POST /v1/judges/claim` | Judge registry | Claim and launch one pending game; returns scoped token and judge prompt |
 | `GET /v1/judgments` | Admin | Judge queue and states |
 | `GET /v1/judgments/{id}` | Judgment | Timing, UI URL, launch errors, state, measurements |
 | `GET /v1/judgments/{id}/artifact` | Judgment | Submitted manifest/files for inspection |
-| `GET /v1/judgments/{id}/events` | Judgment | Latest 1000 run events including actions/results |
 | `POST /v1/judgments/{id}/action` | Judgment | Forward a game action; record latency and response |
 | `POST /v1/judgments/{id}/score` | Judgment | Validate and persist the five scores after exploration |
 
 Success returns 200 JSON. Errors return `{"error":"..."}` with 400 (validation), 401 (wrong/missing token), 404 (unknown route), 409 (wrong lifecycle state/deadline/concurrent action), 413 (oversized upload), or 500 (I/O). Missing referenced records currently return 400. No endpoint executes an arbitrary command outside the submitted manifest.
 
-## Campaign configuration
+## Task configuration
+
+Batch `task_configs` entries set campaign options per benchmark:
 
 ```json
 {
-  "benchmark": "chess960",
-  "name": "ten-minute move pickers",
   "development_seconds": 600,
-  "enrollment_seconds": 60,
   "build_seconds": 120,
   "judge_seconds": 300,
   "score_seconds": 120,
@@ -43,26 +39,17 @@ Success returns 200 JSON. Errors return `{"error":"..."}` with 400 (validation),
   "max_plies": 400,
   "initial_elo": 1500,
   "elo_k": 32,
-  "baselines": true,
-  "pool_run_ids": []
+  "baselines": true
 }
 ```
 
-`benchmark` is `chess960`, `game_build`, `dataset_dashboard`, or `maze_game`. Omitting development time uses 600 seconds for chess, 1800 for games and the maze game, and 900 for dashboards. Dashboards receive an independent random dataset assignment per workspace/run, persisted for later scoring. Omitting the seed generates one from OS randomness; returned config stores it. New game runs independently sample and persist `run.inspiration` (registry version, seed and three themes). Builders and judges receive those run-specific themes. A campaign seed pins chess positions/order only; it does not reuse game or dashboard assignments. Existing runs without inspiration metadata keep their historical campaign themes.
+Omitting development time uses 600 seconds for chess, 1800 for games and the maze game, and 900 for dashboards; the maze game also defaults to a 600 second exploration. `maze_game` requires `follow_ups` or `follow_ups_file`. Omitting the seed generates one from OS randomness; the stored config keeps it. Game runs independently sample and persist `run.inspiration` (registry version, seed and three themes), and dashboard runs persist their dataset assignment. Builders and judges receive those run-specific assignments. A campaign seed pins chess positions/order only.
 
-Development/enrollment range: 1â€“86400 seconds. Exploration/scoring: 1â€“3600. Compilation: 1â€“1800. Start positions: 1â€“960; game cap: 2â€“2000 plies. Elo K: `(0,100]`. Up to 32 candidate runs per campaign; agent names are unique within a campaign. Up to 16 distinct `pool_run_ids` reference previously scored chess solutions with source snapshots in this database. They are rebuilt in fresh work directories; original scores are never overwritten. Baselines/imported entries appear in the pool standings but do not get new run records.
+Development range: 1–86400 seconds. Exploration/scoring: 1–3600. Compilation: 1–1800. Start positions: 1–960; game cap: 2–2000 plies. Elo K: `(0,100]`. Baselines appear in the pool standings but do not get run records; set `baselines:false` to exclude them.
 
-## Start and checkpoint
+## Submissions
 
-Chess960 scoring is manual only. Enrollment remains open until an administrator closes it or requests scoring; `enrollment_seconds` does not expire chess enrollment. Each run still freezes at its own development deadline. Closing enrollment does not score. Use `POST /v1/campaigns/{id}/score` or `scripts/harness.py score CAMPAIGN_ID` to close enrollment and request a tournament once all development deadlines have passed. At least two entries are required. Set `baselines:false` to exclude built-in opponents.
-
-`POST /v1/runs`:
-
-```json
-{"campaign_id":"CAMPAIGN_UUID","agent":"provider/model/harness-version"}
-```
-
-Response contains `run`, `run_token`, `prompt`, `config`, `themes`, `server_time_ms`. `run.deadline_ms` is the authoritative cutoff. A successful start immediately spends development time. Agents cannot extend it. POST a full submission to `/v1/runs/RUN_UUID/submissions`:
+A run's deadline is fixed when the batch starts it; `run.deadline_ms` is the authoritative cutoff. POST a full submission to `/v1/runs/RUN_UUID/submissions`:
 
 ```json
 {
@@ -98,7 +85,7 @@ Web games set `ui:"web"`, bind loopback HTTP on `HARNESS_PORT`, and serve `/`. T
 
 ## Judge claim and score
 
-Claim body: `{"judge":"judge-harness/model-version"}` with optional `run_id` to claim only that run. No work: `{"job":null}`. Otherwise response contains `job`, `judgment_token`, `prompt`, `run`, `benchmark`, `themes`. `job.ui_url` is local to the evaluator host. `launch_error` carries startup/build failures. The countdown starts after launch/readiness or a determined launch failure. The judge inspects the same frozen source through the artifact endpoint; there is no judge editing API.
+The batch scoring runner claims work with `{"judge":"judge-harness/model-version","run_id":"RUN_UUID"}`. No work: `{"job":null}`. Otherwise response contains `job`, `judgment_token`, `prompt`, `run`, `benchmark`, `themes`. `job.ui_url` is local to the evaluator host. `launch_error` carries startup/build failures. The countdown starts after launch/readiness or a determined launch failure. The judge inspects the same frozen source through the artifact endpoint; there is no judge editing API.
 
 During `exploring`, POST `{"action":"describe","params":{}}` and other actions to `/action`. The proxy responds with `ok`, `response` or `error`, and `elapsed_ms`; game output is untrusted content. The service kills the process tree at the cutoff and changes status to `scoring`. Only then submit:
 
@@ -122,6 +109,4 @@ Dashboard judgments use the same lifecycle and endpoints. Their score object con
 
 The [batch scoring command](scoring.md) performs the campaign requests, fresh reviewer launches and score submission automatically, then combines quality, source simplicity and deterministic framework metrics.
 
-See [shared coordinator](coordinator.md#iteration-api) for the run-scoped `/iterations` endpoints. They add completed-iteration submissions without changing the existing direct-agent snapshot API.
-
-Game evaluation also requires an explicit administrator `POST /v1/campaigns/{id}/score` request. Until requested, frozen games are neither built nor queued for judges. After the request, each expired run is prepared and queued; a judge must separately claim it. Closing enrollment alone does not enable evaluation.
+Evaluation starts only with an explicit `POST /v1/campaigns/{id}/score` request, which the batch scoring command sends. Until then, frozen games are neither built nor queued for judges and no chess games are played.

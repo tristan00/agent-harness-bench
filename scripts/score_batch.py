@@ -3,15 +3,15 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import hashlib
-import html
 import json
 import math
 import os
+import sys
 from pathlib import Path
 import time
 
 from agent_selection import claude_arguments, claude_environment, command_arguments, model_effort, resolve, detect_family
-from batch_metrics import aggregate, collect, read, score
+from batch_metrics import TRACKED_ATTRIBUTES, aggregate, collect, read, score
 from harness import ApiError, Client, agent_environment, spawn_agent, stop_agent, write_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,17 +44,18 @@ def output_lock(path):
 
 
 def validate_config(config):
-    benchmarks = {"chess960", "game_build", "dataset_dashboard"} | ({"maze_game"} if "maze_game" in config["benchmark_weights"] else set())
     groups = {"category_weights": {"result", "simplicity", "framework"},
-              "benchmark_weights": benchmarks,
-              "framework_weights": {"task_count", "relations", "parallelism", "token_efficiency"},
-              "references": {"elo_scale", "source_lines", "task_count", "relation_types", "edges_per_task", "tokens"}}
-    if "maze_game" in benchmarks:
-        groups["maze"] = {"completion_weight", "quality_weight"}
+              "benchmark_weights": {"chess960", "game_build", "dataset_dashboard", "maze_game"},
+              "framework_weights": {"task_count", "relations", "parallelism", "token_efficiency", "classification"},
+              "references": {"elo_scale", "source_lines", "task_count", "relation_types", "edges_per_task", "tokens"},
+              "maze": {"completion_weight", "quality_weight"}}
     for name, keys in groups.items():
         values = config[name]
         if set(values) != keys or any(not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0 for value in values.values()):
             raise ValueError(f"Invalid scoring configuration: {name}")
+    attributes = config["classification_attributes"]
+    if not attributes or len(set(attributes)) != len(attributes) or not set(attributes) <= set(TRACKED_ATTRIBUTES):
+        raise ValueError("Invalid scoring configuration: classification_attributes")
     if config["incomplete_token_fallback"] != "agent_seconds_per_development_second":
         raise ValueError("Unsupported token fallback")
     model_effort(judge_selection(config))
@@ -167,32 +168,16 @@ def review_case(args, case, client, output, config):
         stop_agent(process)
 
 
-def write_html(path, report):
-    rows = "".join("<tr><td>" + html.escape(Path(row["workspace"]).name) + "</td>" +
-                   "".join(f"<td>{row['benchmarks'][name]:.2f}</td>" for name in report["config"]["benchmark_weights"]) +
-                   f"<td><strong>{row['score']:.2f}</strong></td></tr>" for row in report["ranking"])
-    cases = "".join(f"<tr><td>{html.escape(Path(case['workspace']).name)}</td><td>{case['benchmark']}</td>" +
-                    "".join(f"<td>{case['categories'][key]:.2f}</td>" for key in ["result","simplicity","framework"]) +
-                    f"<td>{case['source_lines'] if case['source_lines'] is not None else 'Missing'}</td><td>{case['status']}</td></tr>"
-                    for case in report["cases"])
-    path.write_text("""<!doctype html><html lang="en"><meta charset="utf-8"><title>Workspace benchmark scores</title>
-<style>body{font:16px system-ui;max-width:1200px;margin:40px auto;padding:0 24px;background:#f5f6f8;color:#17202c}table{border-collapse:collapse;width:100%;background:white;margin:24px 0}td,th{text-align:left;padding:12px;border-bottom:1px solid #ddd}h1{font-size:28px}small{color:#526273}</style>
-<h1>Workspace benchmark scores</h1><p>Each benchmark has equal weight. Within each benchmark, result, simplicity, and framework efficiency have equal weight. Scores are out of 100.</p>
-<table><thead><tr><th>Workspace</th><th>Chess960</th><th>Game</th><th>Dashboard</th><th>Overall</th></tr></thead><tbody>""" + rows +
-                    "</tbody></table><h2>Components</h2><table><tr><th>Workspace</th><th>Benchmark</th><th>Result</th><th>Simplicity</th><th>Framework</th><th>Source lines</th><th>Status</th></tr>" + cases +
-                    "</table><p>Token scoring mode: " + html.escape(report["token_scoring_mode"]) +
-                    ". Recorded partial token totals and full execution metrics are in scores.json.</p><small>" + html.escape(report["config"]["version"]) + "</small></html>", encoding="utf-8")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("batch")
     parser.add_argument("--data", type=Path, required=True)
-    parser.add_argument("--coordinator-data", type=Path, required=True)
+    parser.add_argument("--coordinator-data", type=Path)
+    parser.add_argument("--coordinator-url")
     parser.add_argument("--url", default="http://127.0.0.1:8741")
     parser.add_argument("--max-judges", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=1800)
-    parser.add_argument("--config", type=Path, default=ROOT / "scoring-v1.json")
+    parser.add_argument("--config", type=Path, default=ROOT / "scoring.json")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.max_judges < 1 or args.timeout < 1:
@@ -210,6 +195,12 @@ def main():
 def score_batch(args, output, config):
     client = Client(args.url, (args.data / "admin-token").read_text().strip())
     batch = client.request("GET", f"/v1/benchmark-batches/{args.batch}")["batch"]
+    if args.coordinator_data is None:
+        coordinator_url = args.coordinator_url
+        if not coordinator_url:
+            profiles = read(args.data / "coordinator-profiles.json")
+            coordinator_url = profiles[batch["profile"]]["coordinator_url"]
+        args.coordinator_data = Path(Client(coordinator_url).request("GET", "/api/state")["dataDirectory"])
     deferred = [case for case in batch["cases"] if case["benchmark"] not in config["benchmark_weights"]]
     batch["cases"] = [case for case in batch["cases"] if case["benchmark"] in config["benchmark_weights"]]
     batch["campaigns"] = {name: campaign for name, campaign in batch["campaigns"].items() if name in config["benchmark_weights"]}
@@ -248,10 +239,10 @@ def score_batch(args, output, config):
             try:
                 reviewed[case["run_id"]] = future.result()
                 print(json.dumps({"run_id":case["run_id"], "status":"reviewed" if reviewed[case["run_id"]] else "no_submission",
-                                  "benchmark":case["benchmark"],"workspace":case["workspace"]}), flush=True)
+                                  "benchmark":case["benchmark"],"workspace":case["workspace"]}), file=sys.stderr, flush=True)
             except Exception as error:
                 errors.append({"run_id":case["run_id"],"error":str(error)})
-                print(json.dumps(errors[-1]), flush=True)
+                print(json.dumps(errors[-1]), file=sys.stderr, flush=True)
     if errors:
         write_json(output / "errors.json", errors)
         raise RuntimeError(f"Incomplete judge results: {output / 'errors.json'}")
@@ -274,17 +265,22 @@ def score_batch(args, output, config):
         run = client.request("GET", f'/v1/runs/{case["run_id"]}') if case.get("run_id") else {}
         unscored.append({"metrics":collect(case, run.get("run"), args.data, args.coordinator_data),
                          "completed_requests":run.get("completed_requests", [])})
-    report = {"batch_id":args.batch,"config":config,"created_at_ms":int(time.time()*1000),"cases":scored,"unscored":unscored,
+    report = {"schema_version":"benchmark-score-report.v2", "producer":"agent-harness-bench scoring utility",
+              "score_generation":{"arithmetic":"deterministic code", "quality_ratings":"independent judge sessions",
+                                  "aggregation":"deterministic weighted means", "human_or_supervising_agent_edits":False},
+              "batch_id":args.batch,"config":config,"created_at_ms":int(time.time()*1000),"cases":scored,"unscored":unscored,
               "scoring_execution":{"judge":args.judge, "max_judges":args.max_judges,
                                    "timeout_seconds":args.timeout, "implementation_sha256":implementation},
               "token_scoring_mode":mode,"ranking":aggregate(scored,config),
+              "token_mode_decision":{"rule":"Use measured tokens only when every launch in every case has complete usage; otherwise use the same runtime proxy for all cases.",
+                  "selected":mode,"incomplete_cases":[{"run_id":item["run_id"],"workspace":item["workspace"],"benchmark":item["benchmark"],
+                      "measured_launches":item["tokens"]["measured_launches"],"launches":item["tokens"]["launches"]} for item in metrics if not item["tokens"]["complete"]]},
               "notes":["Only selected final attempts are scored; previous aborted attempts are excluded.",
                        "Historical workspace settings are preserved without reinterpreting model or prompt selections.",
                        "Dataset dashboard assignments differ across workspaces; this is one observation per assignment, not a causal estimate.",
                        "Source lines include comments and vendored source, matching the existing artifact counter."]}
     write_json(output / "scores.json", report)
-    write_html(output / "scores.html", report)
-    print(json.dumps({"scores":str(output / "scores.json"),"ranking":report["ranking"]},indent=2),flush=True)
+    print(json.dumps(report, allow_nan=False), flush=True)
 
 
 if __name__ == "__main__":

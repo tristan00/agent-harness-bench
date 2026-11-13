@@ -58,6 +58,10 @@ pub fn public(batch: &Value) -> Value {
     value
 }
 
+fn assigned<T: serde::de::DeserializeOwned>(case: &Value, field: &str) -> Result<Option<T>> {
+    Ok(case.get(field).map(|value| serde_json::from_value(value.clone())).transpose()?)
+}
+
 fn plain(path: &Path) -> String {
     path.to_string_lossy()
         .trim_start_matches(r"\\?\")
@@ -85,79 +89,6 @@ fn workspace_documents(path: &Path, settings: &Value) -> Result<Vec<(&'static st
 }
 
 impl Service {
-    pub(crate) fn append_dashboard(&self, id: &str, mut config: Value) -> Result<Value> {
-        let _guard = self.batch_lock.lock().unwrap();
-        let db = self.db();
-        let mut batch = db.batch(id)?;
-        if batch["status"] == "stopped" {
-            return Err("cannot extend a stopped batch".into());
-        }
-        if batch["campaigns"].get("dataset_dashboard").is_some() {
-            return Ok(public(&batch));
-        }
-        if !config.is_object() {
-            return Err("dashboard configuration must be an object".into());
-        }
-        config["benchmark"] = json!(Benchmark::DatasetDashboard);
-        if config.get("development_seconds").is_none() {
-            config["development_seconds"] = json!(900);
-        }
-        let config: Config = serde_json::from_value(config)?;
-        config.validate()?;
-        let campaign = Campaign {
-            id: crate::id(),
-            config,
-            themes: vec![],
-            created_at_ms: now_ms(),
-            enrollment_deadline_ms: i64::MAX,
-            status: "enrolling".into(),
-        };
-        let mut workspaces = HashSet::new();
-        let mut added = Vec::new();
-        for case in batch["cases"].as_array().ok_or("invalid cases")? {
-            let workspace = case["workspace"].as_str().ok_or("missing workspace")?;
-            if !workspaces.insert(workspace.to_owned()) {
-                continue;
-            }
-            if !allowed_agents(&case["settings"]) {
-                return Err("missing or unsupported workspace planner".into());
-            }
-            workspace_documents(Path::new(workspace), &case["settings"])?;
-            let directory = Path::new(workspace).join("dataset_dashboard");
-            if directory.exists() {
-                return Err("dashboard directory already exists".into());
-            }
-            let relative = Path::new(
-                case["workspace_name"]
-                    .as_str()
-                    .ok_or("missing workspace name")?,
-            )
-            .parent()
-            .ok_or("missing workspace parent")?
-            .join("dataset_dashboard");
-            let prompt = batch["template"]
-                .as_str()
-                .ok_or("missing template")?
-                .replace("{benchmark_task}", "dataset_dashboard")
-                .replace("{workspace_name}", &relative.to_string_lossy());
-            if !prompt.contains(&plain(&directory)) {
-                return Err("template workspace path mismatch".into());
-            }
-            added.push(json!({"benchmark":"dataset_dashboard","campaign_id":campaign.id,"workspace":workspace,
-                "directory":plain(&directory),"workspace_name":relative,"settings":case["settings"],
-                "status":"queued","dataset":crate::datasets::random_assignment()}));
-        }
-        batch["cases"].as_array_mut().unwrap().extend(added);
-        batch["campaigns"]["dataset_dashboard"] = json!(campaign.id);
-        batch["status"] = json!("running");
-        batch.as_object_mut().unwrap().remove("ended_at_ms");
-        let tx = db.db.unchecked_transaction()?;
-        db.save_campaign(&campaign)?;
-        db.save_batch(&batch)?;
-        tx.commit()?;
-        Ok(public(&batch))
-    }
-
     pub(crate) fn create_batch(&self, body: Value) -> Result<Value> {
         let _guard = self.batch_lock.lock().unwrap();
         let request: Request = serde_json::from_value(body)?;
@@ -232,43 +163,17 @@ impl Service {
         {
             return Err("supported tasks are chess960, game_build, dataset_dashboard and maze_game".into());
         }
-        for (name, benchmark, seconds) in [
-            ("chess960", Benchmark::Chess960, 600),
-            ("game_build", Benchmark::GameBuild, 1800),
-            ("dataset_dashboard", Benchmark::DatasetDashboard, 900),
-            ("maze_game", Benchmark::MazeGame, 1800),
+        for (name, benchmark) in [
+            ("chess960", Benchmark::Chess960),
+            ("game_build", Benchmark::GameBuild),
+            ("dataset_dashboard", Benchmark::DatasetDashboard),
+            ("maze_game", Benchmark::MazeGame),
         ] {
             if request.benchmarks.as_ref().is_some_and(|names| !names.iter().any(|n| n == name)) {
                 continue;
             }
-            let mut config = request.task_configs.get(name).cloned().unwrap_or(json!({}));
-            if !config.is_object() {
-                return Err("task configuration must be an object".into());
-            }
-            config["benchmark"] = json!(benchmark);
-            if config.get("development_seconds").is_none() {
-                config["development_seconds"] = json!(seconds);
-            }
-            if benchmark == Benchmark::MazeGame && config.get("judge_seconds").is_none() {
-                config["judge_seconds"] = json!(600);
-            }
-            if let Some(file) = config.as_object_mut().unwrap().remove("follow_ups_file") {
-                let text = fs::read_to_string(file.as_str().ok_or("follow_ups_file must be a path")?)?;
-                config["follow_ups"] = serde_json::from_str(&text)?;
-            }
-            let config: Config = serde_json::from_value(config)?;
-            config.validate()?;
-            if !config.pool_run_ids.is_empty() {
-                return Err("batch scoring pools are configured later".into());
-            }
-            let campaign = Campaign {
-                id: crate::id(),
-                themes: vec![],
-                config,
-                created_at_ms: now_ms(),
-                enrollment_deadline_ms: i64::MAX,
-                status: "enrolling".into(),
-            };
+            let config = Config::new(benchmark, request.task_configs.get(name).cloned().unwrap_or(json!({})))?;
+            let campaign = Campaign { id: crate::id(), config, created_at_ms: now_ms(), status: "enrolling".into() };
             campaigns.insert(name, campaign.id.clone());
             for (index, path) in roots.iter().enumerate() {
                 let directory = path.join(name);
@@ -419,23 +324,8 @@ impl Service {
         let mut workflows = self.workflows.lock().unwrap();
         let db = self.db();
         let campaign = db.campaign(case["campaign_id"].as_str().ok_or("missing campaign")?)?;
-        let now = now_ms();
-        let run = Run {
-            inspiration: case.get("inspiration").map(|value| serde_json::from_value(value.clone())).transpose()?,
-            dataset: case
-                .get("dataset")
-                .map(|value| serde_json::from_value(value.clone()))
-                .transpose()?,
-            id: crate::id(),
-            campaign_id: campaign.id.clone(),
-            agent: case["workspace"].as_str().unwrap().into(),
-            status: "developing".into(),
-            started_at_ms: now,
-            deadline_ms: now + campaign.config.development_seconds as i64 * 1000,
-            submission_id: None,
-            prepared_dir: None,
-            error: None,
-        };
+        let run = Run::new(&campaign, case["workspace"].as_str().unwrap(), assigned(case, "inspiration")?, assigned(case, "dataset")?);
+        let now = run.started_at_ms;
         let token = crate::id();
         let mut record =
             json!({"run_id":run.id,"status":"running","mode":"template","started_at_ms":now});
@@ -448,11 +338,7 @@ impl Service {
         batch["cases"][index]["started_at_ms"] = json!(now);
         db.save_batch(batch)?;
         tx.commit()?;
-        let mut started = json!({"run":run,"run_token":token,"prompt":prompts::builder_for_run(&campaign, &run),"config":crate::service::started_config(&campaign.config),"themes":prompts::themes_for_run(&campaign, &run)});
-        if campaign.config.benchmark == Benchmark::MazeGame {
-            started["handoff_token"] = json!(crate::service::handoff_token(&self.admin, &run.id));
-        }
-        match coordinator::launch(&self.root, url, &started, profile) {
+        match coordinator::launch(&self.root, url, &crate::service::started(&self.admin, &campaign, &run, &token), profile) {
             Ok(child) => {
                 workflows.insert(run.id.clone(), child);
             }
@@ -479,7 +365,6 @@ impl Service {
             let mut campaign = db.campaign(id.as_str().unwrap())?;
             if campaign.status == "enrolling" {
                 campaign.status = "awaiting_score".into();
-                campaign.enrollment_deadline_ms = now_ms();
                 db.save_campaign(&campaign)?;
             }
         }

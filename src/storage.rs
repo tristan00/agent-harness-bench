@@ -51,43 +51,6 @@ impl Store {
     pub fn campaigns(&self) -> Result<Vec<Campaign>> {
         self.many("SELECT data FROM campaigns ORDER BY rowid", &[])
     }
-    pub fn iterations(&self, run: &str) -> Result<Vec<Value>> {
-        self.many(
-            "SELECT data FROM iterations WHERE run_id=? ORDER BY number",
-            &[run],
-        )
-    }
-    pub fn iteration(&self, run: &str, number: u64, digest: &str) -> Result<Option<Value>> {
-        let saved: Option<(String, String)> = self
-            .db
-            .query_row(
-                "SELECT digest,data FROM iterations WHERE run_id=?1 AND number=?2",
-                params![run, i64::try_from(number)?],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        saved
-            .map(|(hash, data)| {
-                if hash != digest {
-                    return Err("iteration already submitted with different content".into());
-                }
-                Ok(serde_json::from_str(&data)?)
-            })
-            .transpose()
-    }
-    pub fn save_iteration(
-        &self,
-        run: &str,
-        number: u64,
-        digest: &str,
-        value: &Value,
-    ) -> Result<()> {
-        self.db.execute(
-            "INSERT INTO iterations VALUES(?1,?2,?3,?4)",
-            params![run, i64::try_from(number)?, digest, value.to_string()],
-        )?;
-        Ok(())
-    }
     pub fn workflow(&self, run: &str) -> Result<Option<Value>> {
         self.one("SELECT data FROM workflows WHERE run_id=?", run)
     }

@@ -18,7 +18,7 @@ fn run() -> Result<()> {
     }
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
-            "harness-bench serve [--bind 127.0.0.1:8741] [--data data]\nLocal Rust benchmark evaluator. Admin/judge tokens are generated in the data directory.\nUse scripts/harness.py for enrollment, snapshots, agent execution and judge workers."
+            "harness-bench serve [--bind 127.0.0.1:8741] [--data data]\nLocal Rust benchmark evaluator. Admin/judge tokens are generated in the data directory.\nUse scripts/harness.py for batches, tasks and submissions."
         );
         return Ok(());
     }

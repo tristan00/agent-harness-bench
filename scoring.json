@@ -1,5 +1,5 @@
 {
-  "version": "workspace-scores.v2",
+  "version": "workspace-scores.v4",
   "category_weights": {
     "result": 1,
     "simplicity": 1,
@@ -15,8 +15,14 @@
     "task_count": 1,
     "relations": 1,
     "parallelism": 1,
-    "token_efficiency": 1
+    "token_efficiency": 1,
+    "classification": 1
   },
+  "classification_attributes": [
+    "languages",
+    "functions",
+    "priority"
+  ],
   "references": {
     "elo_scale": 400,
     "source_lines": 1000,
@@ -30,7 +36,10 @@
     "result": 0,
     "simplicity": 0
   },
-  "judge_selections": {"codex": "sol_light", "claude": "claude_opus_5_5_medium"},
+  "judge_selections": {
+    "codex": "sol_light",
+    "claude": "claude_opus_5_5_medium"
+  },
   "playwright_mcp_version": "0.0.85",
   "maze": {
     "completion_weight": 1,

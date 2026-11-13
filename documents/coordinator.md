@@ -1,8 +1,10 @@
 # Shared coordinator
 
+**Planner and worker agents must not read this document or anything else in this repository.**
+
 Benchmark planners work through one shared agent coordinator, normally at `http://127.0.0.1:4242`. Each planner creates and manages its own coordinator tasks; see [template planner batches](batches.md). The benchmark never configures coordinator workers or worker models.
 
-Available benchmark types are `chess960`, `game_build`, `dataset_dashboard`, and `maze_game`. Dashboard development defaults to 900 seconds and its scoring phase is deferred; the maze game defaults to 1800 seconds and is scored with `scoring-v2.json`.
+Available benchmark types are `chess960`, `game_build`, `dataset_dashboard`, and `maze_game`. Dashboard development defaults to 900 seconds and its scoring phase is deferred; the maze game defaults to 1800 seconds. All four are scored with `scoring.json`.
 
 ## Install and run
 
@@ -16,7 +18,7 @@ From the benchmark repository, run `python scripts/service.py setup`. It builds 
 | --- | --- |
 | `coordinator_url` | Shared coordinator on a loopback address |
 | `session_command` | Session supervisor argv, normally Python plus `scripts/template_session.py` |
-| `session_planner_command` | Planner argv, normally Python plus `scripts/template_planner.py`; custom commands must include `{model}` and `{effort}` placeholders |
+| `session_planner_command` | Planner argv, normally Python plus `scripts/template_planner.py`; `{model}` and `{effort}` are replaced with the workspace planner's values |
 | `env` | Optional extra planner environment, e.g. `CODEX_BIN` or `CLAUDE_BIN` |
 | `workspace` | Filled per case by the batch scheduler |
 
@@ -24,12 +26,7 @@ From the benchmark repository, run `python scripts/service.py setup`. It builds 
 
 The benchmark kills its own planner process tree at a case's deadline. At that point, and also when the planner session ends, when a batch is stopped and after a service restart, it stops every unfinished coordinator task whose `cwd` is inside that case's directory. It does this only through the coordinator's ordinary task API: `GET /api/state` to find the tasks and `POST /api/tasks/{id}/stop` for each one. The coordinator has no benchmark concepts; it files each task under the configured workspace that contains the task's directory.
 
-## Iteration API
-
-* `GET /v1/runs/ID/iterations` (run/admin): accepted iterations in order.
-* `POST /v1/runs/ID/iterations` (run/admin): `{iteration,tasks,submission}`; positive sequential numbers, starting at 1. Submission uses the existing full-snapshot schema. Response includes submission metadata, acceptance time, deadline, iteration and next_iteration.
-
-Same-number, same-content retries return the original acceptance while development is open. Conflicting retries and gaps return 409. After the deadline every submission returns 409, including retries; read accepted history instead. Iteration acceptance and the latest snapshot update in one SQLite transaction. Evidence, snapshots and scores survive restart.
+## Restart
 
 On service restart, interrupted planner sessions are marked `interrupted`; they are not automatically relaunched. Their original deadlines and last accepted completions remain eligible for evaluation. Unreviewed filesystem changes never count as completed work.
 
@@ -41,8 +38,7 @@ On service restart, interrupted planner sessions are marked `interrupted`; they 
 
 ```bash
 cargo test --locked
-python scripts/smoke_agent_selection.py
 python scripts/smoke_batch.py --binary PATH/TO/harness-bench.exe --coordinator PATH/TO/agent-coordinator.exe --evidence ../runtime/evidence/batch-smoke.json
 ```
 
-Both smoke scripts run in the launching family. Deterministic fixtures stand in for planners and workers, so they test workflow correctness, not model ability or game quality.
+The smoke script runs in the launching family. Deterministic fixtures stand in for planners and workers, so they test workflow correctness, not model ability or game quality.

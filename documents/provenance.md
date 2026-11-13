@@ -1,5 +1,7 @@
 # Chess960 port provenance
 
+**Planner and worker agents must not read this document or anything else in this repository.**
+
 `src/engine.rs` was copied from the user's neighboring project:
 
 `../chess960_rule_based_evaluator/chess960/src/engine.rs`

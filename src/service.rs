@@ -33,10 +33,14 @@ pub(crate) fn handoff_token(admin: &str, run: &str) -> String {
     crate::storage::hash(&format!("{admin}:handoff:{run}"))
 }
 
-pub(crate) fn started_config(config: &Config) -> Value {
-    let mut value = serde_json::to_value(config).expect("serializable config");
-    value.as_object_mut().unwrap().remove("follow_ups");
-    value
+pub(crate) fn started(admin: &str, campaign: &Campaign, run: &Run, token: &str) -> Value {
+    let mut config = serde_json::to_value(&campaign.config).expect("serializable config");
+    config.as_object_mut().unwrap().remove("follow_ups");
+    let mut started = json!({"run":run,"run_token":token,"prompt":prompts::builder(campaign, run),"config":config,"themes":prompts::themes(run)});
+    if campaign.config.benchmark == Benchmark::MazeGame {
+        started["handoff_token"] = json!(handoff_token(admin, &run.id));
+    }
+    started
 }
 
 struct Session {
@@ -53,578 +57,11 @@ pub struct Service {
     pub(crate) workflows: Mutex<HashMap<String, coordinator::Workflow>>,
     pub(crate) address: Mutex<Option<String>>,
     pub(crate) batch_lock: Mutex<()>,
+    scoring_lock: Mutex<()>,
     pub stopping: AtomicBool,
     _lock: File,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn game_inspiration_is_per_run_persisted_and_used_by_builders_and_judges() {
-        let (root, service, admin, _) = setup();
-        let campaign = service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"game_build","seed":960})).unwrap()["campaign"].clone();
-        assert_eq!(campaign["themes"], json!([]));
-        let mut assigned = Vec::new();
-        for name in ["first", "second"] {
-            let started = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":campaign["id"],"agent":name})).unwrap();
-            let run: Run = serde_json::from_value(started["run"].clone()).unwrap();
-            let c = service.db().campaign(&run.campaign_id).unwrap();
-            let inspiration = run.inspiration.as_ref().unwrap();
-            assert_eq!(inspiration.themes.len(), 3);
-            assert_eq!(inspiration.themes, prompts::themes(inspiration.seed));
-            assert_eq!(started["themes"], json!(inspiration.themes));
-            let task = service.route("GET", &format!("/v1/runs/{}/task",run.id), &admin, Value::Null).unwrap();
-            assert_eq!(task["inspiration"], json!(inspiration));
-            assert_eq!(task["prompt"], started["prompt"]);
-            for theme in &inspiration.themes {
-                assert!(started["prompt"].as_str().unwrap().contains(theme));
-                assert!(prompts::judge_for_run(&c, &run, 0).contains(theme));
-            }
-            assigned.push(run);
-        }
-        assert_ne!(assigned[0].inspiration.as_ref().unwrap().seed, assigned[1].inspiration.as_ref().unwrap().seed);
-        drop(service);
-        let reopened = Service::open(root.path()).unwrap();
-        for run in assigned { assert_eq!(reopened.db().run(&run.id).unwrap().inspiration, run.inspiration); }
-    }
-
-    #[test]
-    fn legacy_run_prompts_keep_the_original_campaign_themes() {
-        let (_root, service, admin, cid) = setup();
-        let mut campaign = service.db().campaign(&cid).unwrap();
-        campaign.config.benchmark = Benchmark::GameBuild;
-        campaign.config.seed = 960;
-        campaign.themes = prompts::themes(960);
-        service.db().save_campaign(&campaign).unwrap();
-        let started = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":cid,"agent":"legacy"})).unwrap();
-        let mut saved = started["run"].clone();
-        saved.as_object_mut().unwrap().remove("inspiration");
-        let legacy: Run = serde_json::from_value(saved).unwrap();
-        assert!(legacy.inspiration.is_none());
-        assert_eq!(prompts::builder_for_run(&campaign, &legacy), prompts::builder(&campaign));
-        assert_eq!(prompts::judge_for_run(&campaign, &legacy, 0), prompts::judge(&campaign));
-        assert_eq!(prompts::themes_for_run(&campaign, &legacy), campaign.themes);
-    }
-
-    #[test]
-    fn dashboard_defaults_assignments_and_legacy_batch_extension() {
-        let (root, service, admin, _) = setup();
-        let campaign = service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"dataset_dashboard"})).unwrap();
-        assert_eq!(campaign["campaign"]["config"]["development_seconds"], 900);
-        let started = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":campaign["campaign"]["id"],"agent":"dashboard"})).unwrap();
-        let task_path = format!("/v1/runs/{}/task", started["run"]["id"].as_str().unwrap());
-        let task = service.route("GET", &task_path, started["run_token"].as_str().unwrap(), Value::Null).unwrap();
-        assert_eq!(task["dataset"], started["run"]["dataset"]);
-        assert!(task["prompt"].as_str().unwrap().contains(task["dataset"]["dataset"]["id"].as_str().unwrap()));
-        assert_eq!(service.route("GET", &task_path, "wrong", Value::Null).unwrap_err().0, 401);
-        let workspaces = root.path().join("workspaces");
-        fs::create_dir(&workspaces).unwrap();
-        let mut cases = Vec::new();
-        for index in 0..4 {
-            let path = workspaces.join(format!("workspace-{index}"));
-            fs::create_dir(&path).unwrap();
-            let mut settings = json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","prompts":{}});
-            for (role, filename) in [("project_planner", "PROJECT_PLANNER.md"), ("worker_protocol", "WORKER_PROTOCOL.md")] {
-                use sha2::{Digest, Sha256};
-                fs::write(path.join(filename), "Selected fixture instructions.").unwrap();
-                settings["prompts"][role] = json!({"candidate":"fixture.md","sha256":format!("{:x}", Sha256::digest(b"Selected fixture instructions."))});
-            }
-            for benchmark in ["chess960", "game_build"] {
-                cases.push(json!({"workspace":path,"workspace_name":format!("workspace-{index}/{benchmark}"),
-                    "benchmark":benchmark,"status":"deadline","settings":settings}));
-            }
-        }
-        let before = cases.clone();
-        let template = format!("Task {{benchmark_task}}\nWorkspace: {}", workspaces.join("{workspace_name}").display());
-        service.db().save_batch(&json!({"id":"legacy","status":"completed","cases":cases,"campaigns":{},"template":template})).unwrap();
-        let extended = service.append_dashboard("legacy", json!({})).unwrap();
-        assert_eq!(&extended["cases"].as_array().unwrap()[..8], before.as_slice());
-        assert_eq!(extended["cases"].as_array().unwrap().len(), 12);
-        assert_eq!(extended, service.append_dashboard("legacy", json!({})).unwrap());
-        let seeds: std::collections::HashSet<_> = extended["cases"].as_array().unwrap()[8..].iter().map(|c| c["dataset"]["seed"].as_u64().unwrap()).collect();
-        assert_eq!(seeds.len(), 4);
-    }
-    fn setup() -> (crate::test_support::TestDir, Arc<Service>, String, String) {
-        let root = crate::test_support::dir();
-        let service = Service::open(root.path()).unwrap();
-        let token = service.admin.clone();
-        let c = service
-            .route(
-                "POST",
-                "/v1/campaigns",
-                &token,
-                json!({"benchmark":"chess960","development_seconds":10}),
-            )
-            .unwrap();
-        let cid = c["campaign"]["id"].as_str().unwrap().to_owned();
-        (root, service, token, cid)
-    }
-    #[test]
-    fn game_evaluation_requires_manual_request() {
-        let (_root, s, token, cid) = setup();
-        {
-            let db = s.db();
-            let mut c = db.campaign(&cid).unwrap();
-            c.config.benchmark = Benchmark::GameBuild;
-            c.config.development_seconds = 1800;
-            db.save_campaign(&c).unwrap();
-        }
-        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"game"})).unwrap();
-        let id = started["run"]["id"].as_str().unwrap();
-        {
-            let db = s.db();
-            let mut run = db.run(id).unwrap();
-            assert_eq!(run.deadline_ms - run.started_at_ms, 1_800_000);
-            run.deadline_ms = now_ms() - 1;
-            db.save_run(&run).unwrap();
-        }
-        s.route("POST", &format!("/v1/campaigns/{cid}/close"), &token, json!({})).unwrap();
-        s.tick().unwrap();
-        s.evaluate_next().unwrap();
-        assert_eq!(s.db().run(id).unwrap().status, "frozen");
-        assert!(s.db().judgments().unwrap().is_empty());
-        s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
-        s.evaluate_next().unwrap();
-        assert!(s.db().judgments().unwrap().is_empty());
-        assert_eq!(s.db().run(id).unwrap().status, "failed");
-    }
-    #[test]
-    fn tournaments_and_judged_runs_are_evaluated_by_separate_workers() {
-        let (_root, s, token, chess) = setup();
-        let game = s.route("POST", "/v1/campaigns", &token, json!({"benchmark":"game_build"})).unwrap()["campaign"]["id"].as_str().unwrap().to_owned();
-        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":game,"agent":"game"})).unwrap();
-        let id = started["run"]["id"].as_str().unwrap().to_owned();
-        s.route("POST", &format!("/v1/runs/{id}/submissions"), started["run_token"].as_str().unwrap(),
-            json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
-        {
-            let db = s.db();
-            let mut run = db.run(&id).unwrap();
-            run.deadline_ms = now_ms() - 1;
-            db.save_run(&run).unwrap();
-            let mut c = db.campaign(&chess).unwrap();
-            c.status = "scoring_requested".into();
-            db.save_campaign(&c).unwrap();
-        }
-        s.route("POST", &format!("/v1/campaigns/{game}/close"), &token, json!({})).unwrap();
-        s.tick().unwrap();
-        s.route("POST", &format!("/v1/campaigns/{game}/score"), &token, json!({})).unwrap();
-        s.evaluate(true).unwrap();
-        assert!(s.db().judgments().unwrap().is_empty(), "the tournament worker never prepares judged runs");
-        s.evaluate(false).unwrap();
-        assert_eq!(s.db().judgments().unwrap().len(), 1);
-        assert_eq!(s.db().campaign(&chess).unwrap().status, "completed", "the tournament worker still plays chess");
-    }
-    #[test]
-    fn dashboard_scores_use_six_independent_criteria() {
-        let (_root, s, token, cid) = setup();
-        {
-            let db = s.db();
-            let mut c = db.campaign(&cid).unwrap();
-            c.config.benchmark = Benchmark::DatasetDashboard;
-            db.save_campaign(&c).unwrap();
-        }
-        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"dashboard-score"})).unwrap();
-        let run_id = started["run"]["id"].as_str().unwrap();
-        let judgment = Judgment { id:crate::id(), run_id:run_id.into(), status:"scoring".into(), judge:Some("fixture".into()),
-            started_at_ms:Some(now_ms()-2000), explore_deadline_ms:Some(now_ms()-1000), score_deadline_ms:Some(now_ms()+10000),
-            ui_url:None, launch_error:None, actions:0, successful_actions:0, action_elapsed_ms:0.0, peak_memory_bytes:0, cpu_time_ms:0 };
-        s.db().save_judgment(&judgment).unwrap();
-        let path = format!("/v1/judgments/{}/score", judgment.id);
-        let mut body = json!({"measurements":{"load_ms":12.0},"notes":"fixture"});
-        for key in ["completeness","information_architecture","prose_economy","animation","originality","performance"] {
-            body[key] = json!({"score":3,"evidence":"Observed fixture behavior"});
-        }
-        let mut invalid = body.clone(); invalid["animation"]["score"] = json!(6);
-        assert_eq!(s.route("POST", &path, &token, invalid).unwrap_err().0, 400);
-        let response = s.route("POST", &path, &token, body.clone()).unwrap();
-        assert_eq!(response["report"]["total_out_of_30"],18);
-        assert_eq!(response["report"]["mean_out_of_5"],3.0);
-        assert_eq!(response["report"]["benchmark"],"dataset_dashboard");
-        assert_eq!(s.route("POST", &path, &token, body).unwrap_err().0,409);
-    }
-    #[test]
-    fn manual_enrollment_defers_scoring_but_preserves_run_deadlines() {
-        let (_root, s, token, cid) = setup();
-        {
-            let db = s.db();
-            let mut c = db.campaign(&cid).unwrap();
-            c.config.baselines = false;
-            c.config.development_seconds = 1200;
-            c.enrollment_deadline_ms = now_ms() - 1;
-            db.save_campaign(&c).unwrap();
-        }
-        s.tick().unwrap();
-        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"a"})).unwrap();
-        let id = started["run"]["id"].as_str().unwrap();
-        {
-            let db = s.db();
-            let mut run = db.run(id).unwrap();
-            assert_eq!(run.deadline_ms - run.started_at_ms, 1_200_000);
-            run.deadline_ms = now_ms() - 1;
-            db.save_run(&run).unwrap();
-        }
-        s.tick().unwrap();
-        s.evaluate_next().unwrap();
-        assert_eq!(s.db().run(id).unwrap().status, "frozen");
-        assert_eq!(s.db().campaign(&cid).unwrap().status, "enrolling");
-        assert!(s.db().games(&cid).unwrap().is_empty());
-        s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"b"})).unwrap();
-        s.route("POST", &format!("/v1/campaigns/{cid}/close"), &token, json!({})).unwrap();
-        assert_eq!(s.db().campaign(&cid).unwrap().status, "awaiting_score");
-        s.evaluate_next().unwrap();
-        assert_eq!(s.db().campaign(&cid).unwrap().status, "awaiting_score");
-        assert!(s.db().games(&cid).unwrap().is_empty());
-        assert_eq!(s.route("POST", &format!("/v1/campaigns/{cid}/score"), "invalid", json!({})).unwrap_err().0, 401);
-        s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
-        assert_eq!(s.db().campaign(&cid).unwrap().status, "scoring_requested");
-        assert_eq!(s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"c"})).unwrap_err().0, 409);
-    }
-    #[test]
-    fn deadline_freezes_last_snapshot_and_rejects_late_uploads() {
-        let (_root, s, token, cid) = setup();
-        let started = s
-            .route(
-                "POST",
-                "/v1/runs",
-                &token,
-                json!({"campaign_id":cid,"agent":"a"}),
-            )
-            .unwrap();
-        let id = started["run"]["id"].as_str().unwrap();
-        let scoped = started["run_token"].as_str().unwrap();
-        let submission = json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print('first')"}]});
-        s.route(
-            "POST",
-            &format!("/v1/runs/{id}/submissions"),
-            scoped,
-            submission.clone(),
-        )
-        .unwrap();
-        let mut latest = submission.clone();
-        latest["files"][0]["text"] = json!("print('second')");
-        let accepted = s
-            .route(
-                "POST",
-                &format!("/v1/runs/{id}/submissions"),
-                scoped,
-                latest,
-            )
-            .unwrap();
-        {
-            let db = s.db();
-            let mut r = db.run(id).unwrap();
-            r.deadline_ms = now_ms() - 1;
-            db.save_run(&r).unwrap();
-        }
-        assert_eq!(
-            s.route(
-                "POST",
-                &format!("/v1/runs/{id}/submissions"),
-                scoped,
-                submission
-            )
-            .unwrap_err()
-            .0,
-            409
-        );
-        s.tick().unwrap();
-        let r = s.db().run(id).unwrap();
-        assert_eq!(r.status, "frozen");
-        assert_eq!(
-            r.submission_id.as_deref(),
-            accepted["submission"]["id"].as_str()
-        );
-    }
-    #[test]
-    fn iterations_are_sequential_idempotent_and_deadline_bound() {
-        let (_root, service, admin, campaign) = setup();
-        let start = service
-            .route(
-                "POST",
-                "/v1/runs",
-                &admin,
-                json!({"campaign_id":campaign,"agent":"iterations"}),
-            )
-            .unwrap();
-        let id = start["run"]["id"].as_str().unwrap();
-        let token = start["run_token"].as_str().unwrap();
-        let path = format!("/v1/runs/{id}/iterations");
-        let mut completion = json!({"iteration":1,"tasks":["reviewed-task"],"submission":{
-            "manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print('first')"}]
-        }});
-        assert_eq!(
-            service
-                .route("POST", &path, "invalid", completion.clone())
-                .unwrap_err()
-                .0,
-            401
-        );
-        completion["iteration"] = json!(2);
-        assert_eq!(
-            service
-                .route("POST", &path, token, completion.clone())
-                .unwrap_err()
-                .0,
-            409
-        );
-        completion["iteration"] = json!(1);
-        let first = service
-            .route("POST", &path, token, completion.clone())
-            .unwrap();
-        assert_eq!(
-            first,
-            service
-                .route("POST", &path, token, completion.clone())
-                .unwrap()
-        );
-        completion["submission"]["files"][0]["text"] = json!("print('second')");
-        assert_eq!(
-            service
-                .route("POST", &path, token, completion.clone())
-                .unwrap_err()
-                .0,
-            409
-        );
-        completion["iteration"] = json!(2);
-        let second = service
-            .route("POST", &path, token, completion.clone())
-            .unwrap();
-        assert_eq!(second["next_iteration"], 3);
-        assert_eq!(service.db().iterations(id).unwrap().len(), 2);
-        {
-            let db = service.db();
-            let mut run = db.run(id).unwrap();
-            run.deadline_ms = now_ms() - 1;
-            db.save_run(&run).unwrap();
-        }
-        completion["iteration"] = json!(3);
-        assert_eq!(
-            service
-                .route("POST", &path, token, completion)
-                .unwrap_err()
-                .0,
-            409
-        );
-        service.tick().unwrap();
-        assert_eq!(
-            service.db().run(id).unwrap().submission_id.as_deref(),
-            second["submission"]["id"].as_str()
-        );
-        assert_eq!(service.db().run(id).unwrap().status, "frozen");
-    }
-    fn maze_campaign(service: &Service, admin: &str) -> (String, String, String) {
-        let campaign = service.route("POST", "/v1/campaigns", admin, json!({"benchmark":"maze_game","follow_ups":["Second request.","Third request."]})).unwrap();
-        assert_eq!(campaign["campaign"]["config"]["development_seconds"], 1800);
-        assert_eq!(campaign["campaign"]["config"]["judge_seconds"], 600);
-        let cid = campaign["campaign"]["id"].as_str().unwrap();
-        let start = service.route("POST", "/v1/runs", admin, json!({"campaign_id":cid,"agent":"maze"})).unwrap();
-        assert!(start["config"].get("follow_ups").is_none());
-        (start["run"]["id"].as_str().unwrap().to_owned(), start["run_token"].as_str().unwrap().to_owned(), start["handoff_token"].as_str().unwrap().to_owned())
-    }
-    #[test]
-    fn maze_requests_advance_only_through_the_supervisor_handoff() {
-        let (_root, service, admin, chess) = setup();
-        let (id, token, handoff) = maze_campaign(&service, &admin);
-        let task = service.route("GET", &format!("/v1/runs/{id}/task"), &token, Value::Null).unwrap();
-        let prompt = task["prompt"].as_str().unwrap();
-        assert!(prompt.contains(prompts::MAZE_REQUEST) && !prompt.contains("Second request."));
-        for word in ["stage", "sequen", "follow", "next request", "complete it"] {
-            assert!(!prompt.to_lowercase().contains(word), "{word}");
-        }
-        let path = format!("/v1/runs/{id}/handoff");
-        assert_eq!(service.route("POST", &path, &token, json!({"action":"advance"})).unwrap_err().0, 401);
-        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
-        assert_eq!((current["request"].as_u64(), current["submitted"].as_bool()), (Some(1), Some(false)));
-        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
-        let submit = |text: &str| service.route("POST", &format!("/v1/runs/{id}/submissions"), &token,
-            json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":text}]})).unwrap();
-        submit("print(1)");
-        submit("print(1.5)");
-        let next = service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
-        assert_eq!(next["next"], prompts::maze_follow_up("Second request."));
-        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
-        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
-        assert_eq!(current["continue"], prompts::maze_continue("Second request."));
-        submit("print(2)");
-        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].as_str().unwrap().starts_with("Third request."));
-        submit("print(3)");
-        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].is_null());
-        service.tick().unwrap();
-        let run = service.route("GET", &format!("/v1/runs/{id}"), &token, Value::Null).unwrap();
-        assert_eq!(run["run"]["status"], "frozen");
-        assert_eq!(run["completed_requests"].as_array().unwrap().len(), 3);
-        assert!(run["completed_requests"].as_array().unwrap().iter().all(|r| r["submission_id"].is_string()));
-        let other = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":chess,"agent":"single"})).unwrap();
-        assert!(other.get("handoff_token").is_none());
-        let other_path = format!("/v1/runs/{}/handoff", other["run"]["id"].as_str().unwrap());
-        assert_eq!(service.route("POST", &other_path, &admin, json!({"action":"current"})).unwrap_err().0, 409);
-    }
-    #[test]
-    fn wipe_deletes_every_run_and_submission() {
-        let (root, service, admin, _chess) = setup();
-        let (id, token, _) = maze_campaign(&service, &admin);
-        service.route("POST", &format!("/v1/runs/{id}/submissions"), &token, json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
-        assert!(root.path().join("submissions").exists());
-        assert_eq!(service.route("POST", "/v1/admin/wipe", &token, Value::Null).unwrap_err().0, 401);
-        let report = service.route("POST", "/v1/admin/wipe", &admin, Value::Null).unwrap();
-        assert_eq!((report["deleted"]["submissions"].as_u64(), report["deleted"]["runs"].as_u64(), report["deleted"]["campaigns"].as_u64()), (Some(1), Some(1), Some(2)));
-        assert_eq!(report["errors"], json!([]));
-        assert!(!root.path().join("submissions").exists());
-        assert!(service.db().campaigns().unwrap().is_empty() && service.db().all_runs().unwrap().is_empty());
-        assert!(service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"chess960"})).is_ok());
-    }
-    #[test]
-    fn maze_handoff_stop_freezes_and_judging_scores_received_requests() {
-        let (_root, service, admin, _chess) = setup();
-        let (id, token, handoff) = maze_campaign(&service, &admin);
-        let path = format!("/v1/runs/{id}/handoff");
-        service.route("POST", &format!("/v1/runs/{id}/submissions"), &token, json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
-        service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
-        service.route("POST", &path, &handoff, json!({"action":"stop"})).unwrap();
-        service.tick().unwrap();
-        assert_eq!(service.db().run(&id).unwrap().status, "frozen");
-        let db = service.db();
-        let campaign = db.campaign(&db.run(&id).unwrap().campaign_id).unwrap();
-        drop(db);
-        let judge = prompts::judge_for_run(&campaign, &service.db().run(&id).unwrap(), 1);
-        assert!(judge.contains("1. Build a simple maze game") && judge.contains("2. Second request.") && !judge.contains("Third request."));
-        let criterion = json!({"score":3,"evidence":"seen"});
-        let mut score = json!({"requests":[{"request":1,"fraction":1.0,"evidence":"works"},{"request":2,"fraction":0.5,"evidence":"half"}],
-            "interface":criterion,"efficiency":criterion,"visuals":criterion,"testability":criterion,"notes":""});
-        let parsed: MazeScore = serde_json::from_value(score.clone()).unwrap();
-        parsed.validate(2).unwrap();
-        assert_eq!((parsed.total(), parsed.progress()), (12, 1.5));
-        assert!(parsed.validate(3).is_err());
-        score["requests"][1]["fraction"] = json!(1.5);
-        assert!(serde_json::from_value::<MazeScore>(score).unwrap().validate(2).is_err());
-    }
-    #[test]
-    fn restart_marks_active_workflow_interrupted_without_losing_completions() {
-        let (root, service, admin, campaign) = setup();
-        let start = service
-            .route(
-                "POST",
-                "/v1/runs",
-                &admin,
-                json!({"campaign_id":campaign,"agent":"restart-workflow"}),
-            )
-            .unwrap();
-        let id = start["run"]["id"].as_str().unwrap();
-        let accepted = service.route("POST", &format!("/v1/runs/{id}/iterations"), &admin,
-            json!({"iteration":1,"submission":{"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print('accepted')"}]}})).unwrap();
-        service
-            .db()
-            .save_workflow(id, &json!({"run_id":id,"status":"running"}))
-            .unwrap();
-        drop(service);
-        let reopened = Service::open(root.path()).unwrap();
-        assert_eq!(
-            reopened.db().workflow(id).unwrap().unwrap()["status"],
-            "interrupted"
-        );
-        assert_eq!(
-            reopened.db().iterations(id).unwrap(),
-            vec![accepted.clone()]
-        );
-        let run = reopened.db().run(id).unwrap();
-        assert_eq!(
-            run.deadline_ms,
-            start["run"]["deadline_ms"].as_i64().unwrap()
-        );
-        assert_eq!(
-            run.submission_id.as_deref(),
-            accepted["submission"]["id"].as_str()
-        );
-    }
-    #[test]
-    fn scoped_tokens_cannot_administer_or_read_other_runs() {
-        let (_root, s, admin, cid) = setup();
-        let a = s
-            .route(
-                "POST",
-                "/v1/runs",
-                &admin,
-                json!({"campaign_id":cid,"agent":"a"}),
-            )
-            .unwrap();
-        let b = s
-            .route(
-                "POST",
-                "/v1/runs",
-                &admin,
-                json!({"campaign_id":cid,"agent":"b"}),
-            )
-            .unwrap();
-        let token = a["run_token"].as_str().unwrap();
-        assert_eq!(
-            s.route("GET", "/v1/campaigns", token, json!({}))
-                .unwrap_err()
-                .0,
-            401
-        );
-        assert_eq!(
-            s.route(
-                "GET",
-                &format!("/v1/runs/{}", b["run"]["id"].as_str().unwrap()),
-                token,
-                json!({})
-            )
-            .unwrap_err()
-            .0,
-            401
-        );
-        assert_eq!(
-            s.route("POST", "/v1/judges/claim", token, json!({"judge":"bad"}))
-                .unwrap_err()
-                .0,
-            401
-        );
-        assert!(Service::open(s.root.as_path()).is_err());
-    }
-    #[test]
-    fn score_schema_rejects_missing_evidence_and_out_of_range_values() {
-        let mut c = Criterion {
-            score: 5,
-            evidence: "observed".into(),
-        };
-        let mut score = GameScore {
-            interface: c.clone(),
-            efficiency: c.clone(),
-            gameplay: c.clone(),
-            visuals: c.clone(),
-            testability: c.clone(),
-            compared_games: vec!["Civilization VI".into()],
-            notes: "".into(),
-        };
-        assert_eq!(score.total(), 25);
-        assert!(score.validate().is_ok());
-        c.score = 6;
-        score.interface = c;
-        assert!(score.validate().is_err());
-        score.interface.score = 0;
-        score.interface.evidence = " ".into();
-        assert!(score.validate().is_err());
-    }
-    #[test]
-    fn restart_retains_deadlines_and_last_accepted_version() {
-        let (root, s, admin, cid) = setup();
-        let a = s
-            .route(
-                "POST",
-                "/v1/runs",
-                &admin,
-                json!({"campaign_id":cid,"agent":"a"}),
-            )
-            .unwrap();
-        let id = a["run"]["id"].as_str().unwrap();
-        let deadline = a["run"]["deadline_ms"].as_i64().unwrap();
-        drop(s);
-        let reopened = Service::open(root.path()).unwrap();
-        assert_eq!(reopened.db().run(id).unwrap().deadline_ms, deadline);
-    }
-}
 #[derive(Debug)]
 struct ApiError(u16, String);
 type ApiResult<T> = std::result::Result<T, ApiError>;
@@ -688,6 +125,7 @@ impl Service {
             sessions: Mutex::new(HashMap::new()),
             workflows: Mutex::new(HashMap::new()),
             batch_lock: Mutex::new(()),
+            scoring_lock: Mutex::new(()),
             address: Mutex::new(None),
             stopping: AtomicBool::new(false),
             _lock: lock,
@@ -869,10 +307,6 @@ impl Service {
             }
         }
         for mut c in db.campaigns()? {
-            if c.config.benchmark != Benchmark::Chess960 && c.status == "enrolling" && now >= c.enrollment_deadline_ms {
-                c.status = "waiting".into();
-                db.save_campaign(&c)?;
-            }
             if c.config.benchmark != Benchmark::Chess960 && c.status == "scoring_requested" {
                 let runs = db.runs(&c.id)?;
                 if runs
@@ -1033,38 +467,6 @@ impl Service {
                 artifact_sha256: artifact.map(|a| a.sha256),
             });
         }
-        // Imported opponents are evaluated from their immutable source, with fresh Elo.
-        // They do not mutate or replace reports from the original campaign.
-        for id in &c.config.pool_run_ids {
-            let run = self.db().run(id)?;
-            let artifact = self.db().artifact(
-                run.submission_id
-                    .as_deref()
-                    .ok_or("pool entry has no artifact")?,
-            )?;
-            let preparation = (|| -> Result<PathBuf> {
-                let dir = artifacts::materialize(&self.root, &artifact, "pool")?;
-                process::build(
-                    &artifact.manifest,
-                    &dir,
-                    Duration::from_secs(c.config.build_seconds),
-                )?;
-                Ok(dir)
-            })();
-            let (directory, error) = match preparation {
-                Ok(dir) => (dir, None),
-                Err(e) => (self.root.clone(), Some(e.to_string())),
-            };
-            entries.push(chess::Entry {
-                id: format!("pool:{id}"),
-                agent: run.agent,
-                manifest: Some(artifact.manifest),
-                directory,
-                error,
-                lines_of_code: Some(artifact.lines_of_code),
-                artifact_sha256: Some(artifact.sha256),
-            });
-        }
         if c.config.baselines {
             for name in ["random", "capture"] {
                 entries.push(chess::Entry {
@@ -1123,7 +525,7 @@ impl Service {
         let db = self.db();
         let tx = db.db.unchecked_transaction()?;
         for standing in &table {
-            if standing.id.starts_with("baseline:") || standing.id.starts_with("pool:") {
+            if standing.id.starts_with("baseline:") {
                 continue;
             }
             let report = json!({"benchmark":"chess960","prompt_version":prompts::VERSION,"campaign_id":c.id,"seed":c.config.seed,"config":c.config,"rating":"per_round_pre_round_elo",
@@ -1244,7 +646,7 @@ impl Service {
         db.save_run(&run)?;
         db.event(Some(&run.id), "judge_started", &j)?;
         Ok(
-            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge_for_run(&c, &run, completed_requests(&db, &run.id)?.len()),"run":run,"themes":prompts::themes_for_run(&c, &run),"benchmark":c.config.benchmark}),
+            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge(&c, &run, completed_requests(&db, &run.id)?.len()),"run":run,"themes":prompts::themes(&run),"benchmark":c.config.benchmark}),
         )
     }
     fn action(&self, id: &str, token: &str, body: Value) -> ApiResult<Value> {
@@ -1313,6 +715,18 @@ impl Service {
                 self.admin(token)?;
                 Ok(json!({"batch":crate::batch::public(&self.db().batch(id)?)}))
             }
+            ("POST", ["v1", "benchmark-batches", id, "score"]) => {
+                self.admin(token)?;
+                let _scoring = self.scoring_lock.try_lock().map_err(|_| ApiError(409, "A scoring request is already running".into()))?;
+                let batch = self.db().batch(id)?;
+                if batch["cases"].as_array().ok_or_else(|| ApiError(500, "Invalid batch cases".into()))?.iter()
+                    .any(|case| case["status"] == "queued" || case["status"] == "running") {
+                    return Err(ApiError(409, "All batch cases must finish before scoring".into()));
+                }
+                let options = serde_json::from_value(body).map_err(|error| ApiError(400, format!("Invalid scoring options: {error}")))?;
+                let url = self.address.lock().unwrap().clone().ok_or_else(|| ApiError(503, "Service is not listening".into()))?;
+                Ok(crate::scoring::run(&self.root, &url, &batch, options)?)
+            }
             ("POST", ["v1", "admin", "wipe"]) => {
                 self.admin(token)?;
                 Ok(self.wipe()?)
@@ -1321,19 +735,15 @@ impl Service {
                 self.admin(token)?;
                 Ok(json!({"batch":self.stop_batch(id)?}))
             }
-            ("POST", ["v1", "benchmark-batches", id, "dashboard"]) => {
-                self.admin(token)?;
-                Ok(json!({"batch":self.append_dashboard(id, body)?}))
-            }
             ("GET", ["v1", "runs", id, "task"]) => {
                 self.run_auth(id, token)?;
                 let db = self.db();
                 let run = db.run(id)?;
                 let campaign = db.campaign(&run.campaign_id)?;
-                let mut task = json!({"run_id":id,"benchmark":campaign.config.benchmark,"prompt":prompts::builder_for_run(&campaign, &run)});
-                if campaign.config.benchmark == Benchmark::GameBuild {
-                    task["themes"] = json!(prompts::themes_for_run(&campaign, &run));
-                    if let Some(inspiration) = &run.inspiration { task["inspiration"] = json!(inspiration); }
+                let mut task = json!({"run_id":id,"benchmark":campaign.config.benchmark,"prompt":prompts::builder(&campaign, &run)});
+                if let Some(inspiration) = &run.inspiration {
+                    task["themes"] = json!(inspiration.themes);
+                    task["inspiration"] = json!(inspiration);
                 }
                 if let Some(dataset) = run.dataset { task["dataset"] = json!(dataset); }
                 Ok(task)
@@ -1341,72 +751,12 @@ impl Service {
             ("GET", ["health"]) => Ok(
                 json!({"status":"ok","service":"agent-harness-bench","protocol_version":1,"server_time_ms":now_ms()}),
             ),
-            ("POST", ["v1", "campaigns"]) => {
-                self.admin(token)?;
-                let mut config: Config = serde_json::from_value(body.clone())?;
-                if config.benchmark == Benchmark::GameBuild
-                    && body.get("development_seconds").is_none()
-                {
-                    config.development_seconds = 1800;
-                }
-                if config.benchmark == Benchmark::DatasetDashboard && body.get("development_seconds").is_none() {
-                    config.development_seconds = 900;
-                }
-                if config.benchmark == Benchmark::MazeGame && body.get("development_seconds").is_none() {
-                    config.development_seconds = 1800;
-                }
-                if config.benchmark == Benchmark::MazeGame && body.get("judge_seconds").is_none() {
-                    config.judge_seconds = 600;
-                }
-                for id in &config.pool_run_ids {
-                    let db = self.db();
-                    let run = db.run(id)?;
-                    let source = db.campaign(&run.campaign_id)?;
-                    if run.status != "scored"
-                        || run.submission_id.is_none()
-                        || source.config.benchmark != Benchmark::Chess960
-                    {
-                        return Err(ApiError(
-                            400,
-                            "pool entries must be scored chess runs with submitted source".into(),
-                        ));
-                    }
-                }
-                config.validate()?;
-                let now = now_ms();
-                let c = Campaign {
-                    id: crate::id(),
-                    themes: vec![],
-                    enrollment_deadline_ms: now + config.enrollment_seconds as i64 * 1000,
-                    config,
-                    created_at_ms: now,
-                    status: "enrolling".into(),
-                };
-                self.db().save_campaign(&c)?;
-                Ok(json!({"campaign":c}))
-            }
-            ("GET", ["v1", "campaigns"]) => {
-                self.admin(token)?;
-                Ok(json!({"campaigns":self.db().campaigns()?}))
-            }
             ("GET", ["v1", "campaigns", id]) => {
                 self.admin(token)?;
                 let db = self.db();
                 Ok(
                     json!({"campaign":db.campaign(id)?,"runs":db.runs(id)?,"games_completed":db.games(id)?.len()}),
                 )
-            }
-            ("POST", ["v1", "campaigns", id, "close"]) => {
-                self.admin(token)?;
-                let db = self.db();
-                let mut c = db.campaign(id)?;
-                if c.status != "enrolling" {
-                    return Err(ApiError(409, "enrollment already closed".into()));
-                }
-                c.enrollment_deadline_ms = now_ms();
-                c.status = if c.config.benchmark == Benchmark::Chess960 { "awaiting_score" } else { "waiting" }.into();
-                db.save_campaign(&c)?;
-                Ok(json!({"campaign":c}))
             }
             ("POST", ["v1", "campaigns", id, "score"]) => {
                 self.admin(token)?;
@@ -1416,73 +766,16 @@ impl Service {
                     return Err(ApiError(409, "batch cases must finish before scoring".into()));
                 }
                 let mut c = db.campaign(id)?;
-                if !["enrolling", "awaiting_score", "waiting"].contains(&c.status.as_str()) {
-                    return Err(ApiError(409, "campaign is not awaiting a manual scoring request".into()));
+                if !["enrolling", "awaiting_score"].contains(&c.status.as_str()) {
+                    return Err(ApiError(409, "campaign is not awaiting a scoring request".into()));
                 }
-                let runs = db.runs(id)?;
-                let entries = runs.len() + c.config.pool_run_ids.len() + if c.config.baselines { 2 } else { 0 };
-                if c.config.benchmark == Benchmark::Chess960 && entries < 2 {
-                    return Err(ApiError(409, "scoring requires at least two entries".into()));
+                let runs = db.runs(id)?.len();
+                if runs + if c.config.benchmark == Benchmark::Chess960 && c.config.baselines { 2 } else { 0 } < if c.config.benchmark == Benchmark::Chess960 { 2 } else { 1 } {
+                    return Err(ApiError(409, "scoring requires at least two chess entries or one run".into()));
                 }
-                if c.config.benchmark != Benchmark::Chess960 && runs.is_empty() {
-                    return Err(ApiError(409, "game evaluation requires at least one run".into()));
-                }
-                c.enrollment_deadline_ms = now_ms();
                 c.status = "scoring_requested".into();
                 db.save_campaign(&c)?;
                 Ok(json!({"campaign":c}))
-            }
-            ("GET", ["v1", "runs", id, "iterations"]) => {
-                self.run_auth(id, token)?;
-                Ok(json!({"iterations":self.db().iterations(id)?}))
-            }
-            ("POST", ["v1", "runs"]) => {
-                self.admin(token)?;
-                let campaign = body
-                    .get("campaign_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| ApiError(400, "campaign_id required".into()))?;
-                let agent = body
-                    .get("agent")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.trim().is_empty() && s.len() <= 200)
-                    .ok_or_else(|| ApiError(400, "agent name required".into()))?;
-                let db = self.db();
-                let c = db.campaign(campaign)?;
-                let now = now_ms();
-                if c.status != "enrolling" || (c.config.benchmark != Benchmark::Chess960 && now >= c.enrollment_deadline_ms) {
-                    return Err(ApiError(409, "enrollment closed".into()));
-                }
-                let enrolled = db.runs(campaign)?;
-                if enrolled.len() >= 32 || enrolled.iter().any(|r| r.agent == agent) {
-                    return Err(ApiError(
-                        409,
-                        "campaign full or agent already enrolled".into(),
-                    ));
-                }
-                let run = Run {
-                    inspiration: (c.config.benchmark == Benchmark::GameBuild).then(prompts::random_inspiration),
-                    dataset: (c.config.benchmark == Benchmark::DatasetDashboard).then(crate::datasets::random_assignment),
-                    id: crate::id(),
-                    campaign_id: campaign.into(),
-                    agent: agent.into(),
-                    status: "developing".into(),
-                    started_at_ms: now,
-                    deadline_ms: now + c.config.development_seconds as i64 * 1000,
-                    submission_id: None,
-                    prepared_dir: None,
-                    error: None,
-                };
-                let run_token = crate::id();
-                db.insert_run(&run, &run_token)?;
-                db.event(Some(&run.id), "started", &run)?;
-                Ok(
-                    {
-                        let mut started = json!({"run":run,"run_token":run_token,"prompt":prompts::builder_for_run(&c, &run),"config":started_config(&c.config),"themes":prompts::themes_for_run(&c, &run),"server_time_ms":now});
-                        if c.config.benchmark == Benchmark::MazeGame { started["handoff_token"] = json!(handoff_token(&self.admin, &run.id)); }
-                        started
-                    },
-                )
             }
             ("GET", ["v1", "runs", id]) => {
                 self.run_auth(id, token)?;
@@ -1539,85 +832,25 @@ impl Service {
                     _ => Err(ApiError(400, "action must be current, advance or stop".into())),
                 }
             }
-            ("POST", ["v1", "runs", id, kind @ ("submissions" | "iterations")]) => {
+            ("POST", ["v1", "runs", id, "submissions"]) => {
                 self.run_auth(id, token)?;
-                use sha2::{Digest, Sha256};
-                let iteration = if *kind == "iterations" {
-                    Some(
-                        body["iteration"]
-                            .as_u64()
-                            .filter(|n| *n > 0 && *n < i64::MAX as u64)
-                            .ok_or_else(|| {
-                                ApiError(400, "positive iteration number required".into())
-                            })?,
-                    )
-                } else {
-                    None
-                };
-                let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&body)?));
-                let replay = |db: &Store| -> ApiResult<Option<Value>> {
-                    if let Some(number) = iteration {
-                        if let Some(saved) = db
-                            .iteration(id, number, &digest)
-                            .map_err(|e| ApiError(409, e.to_string()))?
-                        {
-                            return Ok(Some(saved));
-                        }
-                        if number != db.iterations(id)?.len() as u64 + 1 {
-                            return Err(ApiError(
-                                409,
-                                "iterations must be sequential, starting at 1".into(),
-                            ));
-                        }
-                    }
-                    Ok(None)
-                };
-                {
-                    let db = self.db();
-                    let r = db.run(id)?;
-                    if r.status != "developing" || now_ms() >= r.deadline_ms {
-                        return Err(ApiError(409, "development deadline passed".into()));
-                    }
-                    if let Some(saved) = replay(&db)? {
-                        return Ok(saved);
-                    }
+                let open = |run: &Run| run.status == "developing" && now_ms() < run.deadline_ms;
+                if !open(&self.db().run(id)?) {
+                    return Err(ApiError(409, "development deadline passed".into()));
                 }
-                let submission = if iteration.is_some() {
-                    body["submission"].clone()
-                } else {
-                    body.clone()
-                };
-                let artifact = artifacts::save(&self.root, serde_json::from_value(submission)?)?;
+                let artifact = artifacts::save(&self.root, serde_json::from_value(body)?)?;
                 let db = self.db();
                 let mut run = db.run(id)?;
-                // Check again after decoding/writing: arrival before expiry alone is insufficient.
-                if run.status != "developing" || now_ms() >= run.deadline_ms {
-                    return Err(ApiError(
-                        409,
-                        "deadline passed before snapshot was accepted".into(),
-                    ));
+                if !open(&run) {
+                    return Err(ApiError(409, "deadline passed before snapshot was accepted".into()));
                 }
-                if let Some(saved) = replay(&db)? {
-                    return Ok(saved);
-                }
-                let tx = db
-                    .db
-                    .unchecked_transaction()
-                    .map_err(|e| ApiError(500, e.to_string()))?;
+                let tx = db.db.unchecked_transaction().map_err(|e| ApiError(500, e.to_string()))?;
                 db.save_artifact(id, &artifact)?;
                 run.submission_id = Some(artifact.id.clone());
                 db.save_run(&run)?;
                 db.event(Some(id), "submitted", &artifact)?;
-                let mut accepted = json!({"submission":artifact,"accepted_at_ms":now_ms(),"deadline_ms":run.deadline_ms});
-                if let Some(number) = iteration {
-                    accepted["iteration"] = json!(number);
-                    accepted["next_iteration"] = json!(number + 1);
-                    accepted["tasks"] = body.get("tasks").cloned().unwrap_or(json!([]));
-                    db.save_iteration(id, number, &digest, &accepted)?;
-                    db.event(Some(id), "iteration_completed", &accepted)?;
-                }
                 tx.commit().map_err(|e| ApiError(500, e.to_string()))?;
-                Ok(accepted)
+                Ok(json!({"submission":artifact,"accepted_at_ms":now_ms(),"deadline_ms":run.deadline_ms}))
             }
             ("POST", ["v1", "judges", "claim"]) => self.claim(token, body),
             ("GET", ["v1", "judgments"]) => {
@@ -1636,11 +869,6 @@ impl Service {
                 Ok(
                     json!({"submission":run.submission_id.as_deref().map(|id|artifacts::read(&self.root,id)).transpose()?}),
                 )
-            }
-            ("GET", ["v1", "judgments", id, "events"]) => {
-                self.judge_auth(id, token)?;
-                let run = self.db().judgment(id)?.run_id;
-                Ok(json!({"events":self.db().events(&run)?}))
             }
             ("POST", ["v1", "judgments", id, "action"]) => self.action(id, token, body),
             ("POST", ["v1", "judgments", id, "score"]) => {
@@ -1681,7 +909,7 @@ impl Service {
                     .as_deref()
                     .map(|id| db.artifact(id))
                     .transpose()?;
-                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":prompts::themes_for_run(&c, &run),"inspiration":run.inspiration,"dataset":run.dataset,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
+                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":prompts::themes(&run),"inspiration":run.inspiration,"dataset":run.dataset,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
                 report[format!("total_out_of_{}", count * 5)] = json!(total);
                 if let Some(progress) = progress {
                     report["prompt_version"] = json!(prompts::MAZE_VERSION);
@@ -1770,5 +998,317 @@ impl Service {
             )
             .with_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
         let _ = request.respond(response);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn campaign(service: &Service, benchmark: Benchmark, overrides: Value) -> String {
+        let c = Campaign { id: crate::id(), config: Config::new(benchmark, overrides).unwrap(), created_at_ms: now_ms(), status: "enrolling".into() };
+        service.db().save_campaign(&c).unwrap();
+        c.id
+    }
+    fn start(service: &Service, cid: &str, agent: &str) -> Value {
+        let db = service.db();
+        let c = db.campaign(cid).unwrap();
+        let run = Run::new(&c, agent, (c.config.benchmark == Benchmark::GameBuild).then(prompts::random_inspiration),
+            (c.config.benchmark == Benchmark::DatasetDashboard).then(crate::datasets::random_assignment));
+        let token = crate::id();
+        db.insert_run(&run, &token).unwrap();
+        started(&service.admin, &c, &run, &token)
+    }
+    fn expire(service: &Service, id: &str) {
+        let db = service.db();
+        let mut run = db.run(id).unwrap();
+        run.deadline_ms = now_ms() - 1;
+        db.save_run(&run).unwrap();
+    }
+    fn submit(service: &Service, started: &Value, text: &str) -> ApiResult<Value> {
+        service.route("POST", &format!("/v1/runs/{}/submissions", started["run"]["id"].as_str().unwrap()), started["run_token"].as_str().unwrap(),
+            json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":text}]}))
+    }
+    fn setup() -> (crate::test_support::TestDir, Arc<Service>, String, String) {
+        let root = crate::test_support::dir();
+        let service = Service::open(root.path()).unwrap();
+        let token = service.admin.clone();
+        let cid = campaign(&service, Benchmark::Chess960, json!({"development_seconds":10}));
+        (root, service, token, cid)
+    }
+
+    #[test]
+    fn game_inspiration_is_per_run_persisted_and_used_by_builders_and_judges() {
+        let (root, service, admin, _) = setup();
+        let cid = campaign(&service, Benchmark::GameBuild, json!({}));
+        let mut assigned = Vec::new();
+        for name in ["first", "second"] {
+            let started = start(&service, &cid, name);
+            let run: Run = serde_json::from_value(started["run"].clone()).unwrap();
+            let c = service.db().campaign(&cid).unwrap();
+            let inspiration = run.inspiration.as_ref().unwrap();
+            assert_eq!(inspiration.themes.len(), 3);
+            assert_eq!(started["themes"], json!(inspiration.themes));
+            let task = service.route("GET", &format!("/v1/runs/{}/task", run.id), &admin, Value::Null).unwrap();
+            assert_eq!(task["inspiration"], json!(inspiration));
+            assert_eq!(task["prompt"], started["prompt"]);
+            for theme in &inspiration.themes {
+                assert!(started["prompt"].as_str().unwrap().contains(theme));
+                assert!(prompts::judge(&c, &run, 0).contains(theme));
+            }
+            assigned.push(run);
+        }
+        assert_ne!(assigned[0].inspiration.as_ref().unwrap().seed, assigned[1].inspiration.as_ref().unwrap().seed);
+        drop(service);
+        let reopened = Service::open(root.path()).unwrap();
+        for run in assigned {
+            assert_eq!(reopened.db().run(&run.id).unwrap().inspiration, run.inspiration);
+        }
+    }
+
+    #[test]
+    fn dashboard_defaults_and_assignments() {
+        let (_root, service, _, _) = setup();
+        let cid = campaign(&service, Benchmark::DatasetDashboard, json!({}));
+        assert_eq!(service.db().campaign(&cid).unwrap().config.development_seconds, 900);
+        let started = start(&service, &cid, "dashboard");
+        let task_path = format!("/v1/runs/{}/task", started["run"]["id"].as_str().unwrap());
+        let task = service.route("GET", &task_path, started["run_token"].as_str().unwrap(), Value::Null).unwrap();
+        assert_eq!(task["dataset"], started["run"]["dataset"]);
+        assert!(task["prompt"].as_str().unwrap().contains(task["dataset"]["dataset"]["id"].as_str().unwrap()));
+        assert_eq!(service.route("GET", &task_path, "wrong", Value::Null).unwrap_err().0, 401);
+    }
+
+    #[test]
+    fn game_evaluation_requires_a_scoring_request() {
+        let (_root, s, token, _) = setup();
+        let cid = campaign(&s, Benchmark::GameBuild, json!({}));
+        let started = start(&s, &cid, "game");
+        let id = started["run"]["id"].as_str().unwrap();
+        let run = s.db().run(id).unwrap();
+        assert_eq!(run.deadline_ms - run.started_at_ms, 1_800_000);
+        expire(&s, id);
+        s.tick().unwrap();
+        s.evaluate_next().unwrap();
+        assert_eq!(s.db().run(id).unwrap().status, "frozen");
+        assert!(s.db().judgments().unwrap().is_empty());
+        assert_eq!(s.route("POST", &format!("/v1/campaigns/{cid}/score"), "invalid", json!({})).unwrap_err().0, 401);
+        s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
+        s.evaluate_next().unwrap();
+        assert!(s.db().judgments().unwrap().is_empty());
+        assert_eq!(s.db().run(id).unwrap().status, "failed");
+    }
+
+    #[test]
+    fn tournaments_and_judged_runs_are_evaluated_by_separate_workers() {
+        let (_root, s, token, chess) = setup();
+        let game = campaign(&s, Benchmark::GameBuild, json!({}));
+        let started = start(&s, &game, "game");
+        let id = started["run"]["id"].as_str().unwrap().to_owned();
+        submit(&s, &started, "print(1)").unwrap();
+        expire(&s, &id);
+        {
+            let db = s.db();
+            let mut c = db.campaign(&chess).unwrap();
+            c.status = "scoring_requested".into();
+            db.save_campaign(&c).unwrap();
+        }
+        s.tick().unwrap();
+        s.route("POST", &format!("/v1/campaigns/{game}/score"), &token, json!({})).unwrap();
+        s.evaluate(true).unwrap();
+        assert!(s.db().judgments().unwrap().is_empty(), "the tournament worker never prepares judged runs");
+        s.evaluate(false).unwrap();
+        assert_eq!(s.db().judgments().unwrap().len(), 1);
+        assert_eq!(s.db().campaign(&chess).unwrap().status, "completed", "the tournament worker still plays chess");
+    }
+
+    #[test]
+    fn dashboard_scores_use_six_independent_criteria() {
+        let (_root, s, token, _) = setup();
+        let cid = campaign(&s, Benchmark::DatasetDashboard, json!({}));
+        let started = start(&s, &cid, "dashboard-score");
+        let run_id = started["run"]["id"].as_str().unwrap();
+        let judgment = Judgment { id:crate::id(), run_id:run_id.into(), status:"scoring".into(), judge:Some("fixture".into()),
+            started_at_ms:Some(now_ms()-2000), explore_deadline_ms:Some(now_ms()-1000), score_deadline_ms:Some(now_ms()+10000),
+            ui_url:None, launch_error:None, actions:0, successful_actions:0, action_elapsed_ms:0.0, peak_memory_bytes:0, cpu_time_ms:0 };
+        s.db().save_judgment(&judgment).unwrap();
+        let path = format!("/v1/judgments/{}/score", judgment.id);
+        let mut body = json!({"measurements":{"load_ms":12.0},"notes":"fixture"});
+        for key in ["completeness","information_architecture","prose_economy","animation","originality","performance"] {
+            body[key] = json!({"score":3,"evidence":"Observed fixture behavior"});
+        }
+        let mut invalid = body.clone();
+        invalid["animation"]["score"] = json!(6);
+        assert_eq!(s.route("POST", &path, &token, invalid).unwrap_err().0, 400);
+        let response = s.route("POST", &path, &token, body.clone()).unwrap();
+        assert_eq!(response["report"]["total_out_of_30"], 18);
+        assert_eq!(response["report"]["mean_out_of_5"], 3.0);
+        assert_eq!(response["report"]["benchmark"], "dataset_dashboard");
+        assert_eq!(s.route("POST", &path, &token, body).unwrap_err().0, 409);
+    }
+
+    #[test]
+    fn chess_waits_for_a_scoring_request() {
+        let (_root, s, token, cid) = setup();
+        let started = start(&s, &cid, "a");
+        let id = started["run"]["id"].as_str().unwrap();
+        expire(&s, id);
+        s.tick().unwrap();
+        s.evaluate_next().unwrap();
+        assert_eq!(s.db().run(id).unwrap().status, "frozen");
+        assert!(s.db().games(&cid).unwrap().is_empty());
+        s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
+        assert_eq!(s.db().campaign(&cid).unwrap().status, "scoring_requested");
+        assert_eq!(s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap_err().0, 409);
+    }
+
+    #[test]
+    fn deadline_freezes_last_snapshot_and_rejects_late_uploads() {
+        let (_root, s, _token, cid) = setup();
+        let started = start(&s, &cid, "a");
+        let id = started["run"]["id"].as_str().unwrap();
+        submit(&s, &started, "print('first')").unwrap();
+        let accepted = submit(&s, &started, "print('second')").unwrap();
+        expire(&s, id);
+        assert_eq!(submit(&s, &started, "print('late')").unwrap_err().0, 409);
+        s.tick().unwrap();
+        let r = s.db().run(id).unwrap();
+        assert_eq!(r.status, "frozen");
+        assert_eq!(r.submission_id.as_deref(), accepted["submission"]["id"].as_str());
+    }
+
+    fn maze_campaign(service: &Service) -> (String, String, String) {
+        let cid = campaign(service, Benchmark::MazeGame, json!({"follow_ups":["Second request.","Third request."]}));
+        let config = service.db().campaign(&cid).unwrap().config;
+        assert_eq!((config.development_seconds, config.judge_seconds), (1800, 600));
+        let start = start(service, &cid, "maze");
+        assert!(start["config"].get("follow_ups").is_none());
+        (start["run"]["id"].as_str().unwrap().to_owned(), start["run_token"].as_str().unwrap().to_owned(), start["handoff_token"].as_str().unwrap().to_owned())
+    }
+
+    #[test]
+    fn maze_requests_advance_only_through_the_supervisor_handoff() {
+        let (_root, service, admin, chess) = setup();
+        let (id, token, handoff) = maze_campaign(&service);
+        let task = service.route("GET", &format!("/v1/runs/{id}/task"), &token, Value::Null).unwrap();
+        let prompt = task["prompt"].as_str().unwrap();
+        assert!(prompt.contains(prompts::MAZE_REQUEST) && !prompt.contains("Second request."));
+        for word in ["stage", "sequen", "follow", "next request", "complete it"] {
+            assert!(!prompt.to_lowercase().contains(word), "{word}");
+        }
+        let path = format!("/v1/runs/{id}/handoff");
+        assert_eq!(service.route("POST", &path, &token, json!({"action":"advance"})).unwrap_err().0, 401);
+        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
+        assert_eq!((current["request"].as_u64(), current["submitted"].as_bool()), (Some(1), Some(false)));
+        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
+        let maze = json!({"run":{"id":id},"run_token":token});
+        submit(&service, &maze, "print(1)").unwrap();
+        submit(&service, &maze, "print(1.5)").unwrap();
+        let next = service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
+        assert_eq!(next["next"], prompts::maze_follow_up("Second request."));
+        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
+        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
+        assert_eq!(current["continue"], prompts::maze_continue("Second request."));
+        submit(&service, &maze, "print(2)").unwrap();
+        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].as_str().unwrap().starts_with("Third request."));
+        submit(&service, &maze, "print(3)").unwrap();
+        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].is_null());
+        service.tick().unwrap();
+        let run = service.route("GET", &format!("/v1/runs/{id}"), &token, Value::Null).unwrap();
+        assert_eq!(run["run"]["status"], "frozen");
+        assert_eq!(run["completed_requests"].as_array().unwrap().len(), 3);
+        assert!(run["completed_requests"].as_array().unwrap().iter().all(|r| r["submission_id"].is_string()));
+        let other = start(&service, &chess, "single");
+        assert!(other.get("handoff_token").is_none());
+        let other_path = format!("/v1/runs/{}/handoff", other["run"]["id"].as_str().unwrap());
+        assert_eq!(service.route("POST", &other_path, &admin, json!({"action":"current"})).unwrap_err().0, 409);
+    }
+
+    #[test]
+    fn wipe_deletes_every_run_and_submission() {
+        let (root, service, admin, _chess) = setup();
+        let (id, token, _) = maze_campaign(&service);
+        submit(&service, &json!({"run":{"id":id},"run_token":token}), "print(1)").unwrap();
+        assert!(root.path().join("submissions").exists());
+        assert_eq!(service.route("POST", "/v1/admin/wipe", &token, Value::Null).unwrap_err().0, 401);
+        let report = service.route("POST", "/v1/admin/wipe", &admin, Value::Null).unwrap();
+        assert_eq!((report["deleted"]["submissions"].as_u64(), report["deleted"]["runs"].as_u64(), report["deleted"]["campaigns"].as_u64()), (Some(1), Some(1), Some(2)));
+        assert_eq!(report["errors"], json!([]));
+        assert!(!root.path().join("submissions").exists());
+        assert!(service.db().campaigns().unwrap().is_empty() && service.db().all_runs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn maze_handoff_stop_freezes_and_judging_scores_received_requests() {
+        let (_root, service, _admin, _chess) = setup();
+        let (id, token, handoff) = maze_campaign(&service);
+        let path = format!("/v1/runs/{id}/handoff");
+        submit(&service, &json!({"run":{"id":id},"run_token":token}), "print(1)").unwrap();
+        service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
+        service.route("POST", &path, &handoff, json!({"action":"stop"})).unwrap();
+        service.tick().unwrap();
+        let run = service.db().run(&id).unwrap();
+        assert_eq!(run.status, "frozen");
+        let campaign = service.db().campaign(&run.campaign_id).unwrap();
+        let judge = prompts::judge(&campaign, &run, 1);
+        assert!(judge.contains("1. Build a simple maze game") && judge.contains("2. Second request.") && !judge.contains("Third request."));
+        let criterion = json!({"score":3,"evidence":"seen"});
+        let mut score = json!({"requests":[{"request":1,"fraction":1.0,"evidence":"works"},{"request":2,"fraction":0.5,"evidence":"half"}],
+            "interface":criterion,"efficiency":criterion,"visuals":criterion,"testability":criterion,"notes":""});
+        let parsed: MazeScore = serde_json::from_value(score.clone()).unwrap();
+        parsed.validate(2).unwrap();
+        assert_eq!((parsed.total(), parsed.progress()), (12, 1.5));
+        assert!(parsed.validate(3).is_err());
+        score["requests"][1]["fraction"] = json!(1.5);
+        assert!(serde_json::from_value::<MazeScore>(score).unwrap().validate(2).is_err());
+    }
+
+    #[test]
+    fn restart_interrupts_workflows_and_keeps_deadlines_and_submissions() {
+        let (root, service, _admin, cid) = setup();
+        let started = start(&service, &cid, "restart-workflow");
+        let id = started["run"]["id"].as_str().unwrap();
+        let accepted = submit(&service, &started, "print('accepted')").unwrap();
+        service.db().save_workflow(id, &json!({"run_id":id,"status":"running"})).unwrap();
+        drop(service);
+        let reopened = Service::open(root.path()).unwrap();
+        assert_eq!(reopened.db().workflow(id).unwrap().unwrap()["status"], "interrupted");
+        let run = reopened.db().run(id).unwrap();
+        assert_eq!(run.deadline_ms, started["run"]["deadline_ms"].as_i64().unwrap());
+        assert_eq!(run.submission_id.as_deref(), accepted["submission"]["id"].as_str());
+    }
+
+    #[test]
+    fn scoped_tokens_cannot_administer_or_read_other_runs() {
+        let (_root, s, _admin, cid) = setup();
+        let a = start(&s, &cid, "a");
+        let b = start(&s, &cid, "b");
+        let token = a["run_token"].as_str().unwrap();
+        assert_eq!(s.route("GET", &format!("/v1/campaigns/{cid}"), token, json!({})).unwrap_err().0, 401);
+        assert_eq!(s.route("GET", &format!("/v1/runs/{}", b["run"]["id"].as_str().unwrap()), token, json!({})).unwrap_err().0, 401);
+        assert_eq!(s.route("POST", "/v1/judges/claim", token, json!({"judge":"bad"})).unwrap_err().0, 401);
+        assert!(Service::open(s.root.as_path()).is_err());
+    }
+
+    #[test]
+    fn score_schema_rejects_missing_evidence_and_out_of_range_values() {
+        let mut c = Criterion { score: 5, evidence: "observed".into() };
+        let mut score = GameScore {
+            interface: c.clone(),
+            efficiency: c.clone(),
+            gameplay: c.clone(),
+            visuals: c.clone(),
+            testability: c.clone(),
+            compared_games: vec!["Civilization VI".into()],
+            notes: "".into(),
+        };
+        assert_eq!(score.total(), 25);
+        assert!(score.validate().is_ok());
+        c.score = 6;
+        score.interface = c;
+        assert!(score.validate().is_err());
+        score.interface.score = 0;
+        score.interface.evidence = " ".into();
+        assert!(score.validate().is_err());
     }
 }

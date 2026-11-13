@@ -21,10 +21,3 @@ def documents(directory, settings):
             raise ValueError(f"Workspace prompt changed: {path}")
         result[filename] = content
     return result
-
-
-def copy_documents(source, destination, settings):
-    contents = documents(source, settings)
-    for filename, content in contents.items():
-        with (Path(destination) / filename).open("xb") as file:
-            file.write(content)
