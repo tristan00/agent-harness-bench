@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from agent_selection import command_arguments, workspace_settings
+from workspace_prompts import documents
 
 USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
 
@@ -12,6 +14,8 @@ USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoni
 def main():
     request_file = Path(os.environ["HARNESS_PLANNER_REQUEST"])
     request = json.loads(request_file.read_text(encoding="utf-8"))
+    settings = workspace_settings(request["workspace_settings"])
+    instructions = documents(request["workspace"], settings)["PROJECT_PLANNER.md"].decode("utf-8")
     text = {"type": "string"}
     task = {"type": "object", "additionalProperties": False, "properties": {
         "key": text, "title": text, "outcome": text,
@@ -26,24 +30,13 @@ def main():
     schema_file = request_file.with_name("schema.json")
     schema_file.write_text(json.dumps(schema), encoding="utf-8")
     prompt = (
-        "You manage a benchmark through an agent coordinator. Plan only; do not edit files or launch workers. "
-        "Return a small executable iteration of tasks. The controller launches your plan, waits for implementation "
-        "AND independent review, submits the completed source, then calls you again with acceptance and task evidence. "
-        "Do not add a generic review task: the coordinator already independently reviews every task. "
-        "First deliver a minimal working solution with harness.json, "
-        "then improve it in later iterations. Inspect the workspace if useful. No score is reported during development. "
-        "Every task has one concern, a title of at most 12 words, at most 3 measurable acceptance criteria, "
-        "and fewer than 110 words total across title, outcome and acceptance. Do not put task IDs, hashes or AGENTS.md "
-        "in prose. Use unique key values and after keys for ordering. Workers automatically read .harness/benchmark.txt. "
-        "Do not request git init, cloning, commits, identity changes, attribution, deployment or external messaging. "
-        "Only use Codex or local models if a task itself needs a model. Choose finish only when no useful improvement "
-        "remains; return empty tasks then. Otherwise choose plan with at least one task.\n" + json.dumps(request)
+        instructions + "\nReturn an iteration using the supplied JSON schema. The controller executes tasks, waits for implementation and review, "
+        "then submits completed source. Use unique key values and after keys. Choose plan with tasks or finish with empty tasks.\n" + json.dumps(request)
     )
     command = [os.environ.get("CODEX_BIN", "codex"), "exec", "--skip-git-repo-check", "--ephemeral", "--json",
                "--sandbox", "read-only", "--output-schema", str(schema_file),
                "--output-last-message", os.environ["HARNESS_PLANNER_RESULT"], "-"]
-    extra = json.loads(os.environ.get("HARNESS_CODEX_ARGS", "[]"))
-    command[2:2] = extra
+    command[2:2] = command_arguments(settings["planner"])
     env = dict(os.environ)
     env.pop("CODEX_WINDOWS_REGISTERED_CORE", None)
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, cwd=request["workspace"])

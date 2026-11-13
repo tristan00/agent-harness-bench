@@ -99,12 +99,14 @@ def main():
             adapter_campaign = admin.request("POST", "/v1/campaigns", {"benchmark": "chess960", "development_seconds": 2,
                 "enrollment_seconds": 60, "positions": 1, "max_plies": 4, "baselines": False,
                 "pool_run_ids": [a["run"]["id"]]})["campaign"]
+            selections = data / "workspace-settings.json"
+            selections.write_text(json.dumps({"planner":"sol_6_1_light","worker":"sol_6_1_light"}))
             adapter_work = data / "builder-work"
             fake_builder = "import shutil,subprocess,sys,time;shutil.copytree(" + repr(str(ROOT / 'examples' / 'chess_python')) + ",'.',dirs_exist_ok=True);subprocess.Popen([sys.executable,'-c',\"import time,pathlib;time.sleep(3);pathlib.Path('escaped').write_text('bad')\"]);time.sleep(60)"
             started_at = time.monotonic()
             subprocess.run([sys.executable, str(ROOT / "scripts" / "harness.py"), "--url", url, "--token-file", str(data / "admin-token"),
                             "run-agent", adapter_campaign["id"], "adapter-fixture", str(adapter_work), "--interval", "0.2",
-                            "--command-json", json.dumps([sys.executable, "-c", fake_builder])], check=True, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+                            "--workspace-settings", str(selections), "--command-json", json.dumps([sys.executable, "-c", fake_builder, "{model}", "{effort}"])], check=True, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
             assert time.monotonic() - started_at < 6
             adapter_run = json.loads((adapter_work / ".harness" / "run.json").read_text())
             adapter_client = Client(url, adapter_run["run_token"])
@@ -178,7 +180,7 @@ def main():
             fake_judge = "import json,os,pathlib;pathlib.Path(os.environ['HARNESS_SCORE_FILE']).write_text(" + repr(json.dumps(score)) + ")"
             subprocess.run([sys.executable, str(ROOT / "scripts" / "harness.py"), "--url", url, "--token-file", str(data / "judge-token"),
                             "judge-worker", "synthetic-adapter-fixture", str(data / "judge-work"), "--once",
-                            "--command-json", json.dumps([sys.executable, "-c", fake_judge])], check=True, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+                            "--workspace-settings", str(selections), "--command-json", json.dumps([sys.executable, "-c", fake_judge, "{model}", "{effort}"])], check=True, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
             assert jrc.request("GET", f'/v1/runs/{jr["run"]["id"]}')["report"]["total_out_of_25"] == 15
             assert not (adapter_work / "escaped").exists()
             evidence["checks"].append("judge adapter submits rubric after cutoff; builder descendants remain terminated")

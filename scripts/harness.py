@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from agent_selection import expand_command, workspace_settings
 
 
 class ApiError(RuntimeError):
@@ -162,6 +163,8 @@ def agent_environment(**values):
 
 
 def run_agent(args, admin):
+    settings = workspace_settings(json.loads(args.workspace_settings.read_text(encoding="utf-8-sig")))
+    argv = expand_command(json.loads(args.command_json), settings["planner"])
     workspace = Path(args.workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     control = workspace / ".harness"
@@ -174,7 +177,7 @@ def run_agent(args, admin):
     client = Client(args.url, started["run_token"])
     # Use monotonic duration calculated from the server's own timestamps.
     stop_at = time.monotonic() + max(0, run["deadline_ms"] - started["server_time_ms"]) / 1000
-    command = [s.replace("{prompt_file}", str(prompt)) for s in json.loads(args.command_json)]
+    command = [s.replace("{prompt_file}", str(prompt)) for s in argv]
     env = agent_environment(HARNESS_URL=args.url, HARNESS_RUN_ID=run["id"], HARNESS_RUN_TOKEN=started["run_token"],
                             HARNESS_PROMPT_FILE=prompt)
     last_hash = None
@@ -213,6 +216,8 @@ def run_agent(args, admin):
 
 
 def judge_worker(args, registry):
+    settings = workspace_settings(json.loads(args.workspace_settings.read_text(encoding="utf-8-sig")))
+    argv = expand_command(json.loads(args.command_json), settings["worker"])
     root = Path(args.workspace).resolve()
     root.mkdir(parents=True, exist_ok=True)
     while True:
@@ -231,7 +236,7 @@ def judge_worker(args, registry):
         instructions = claimed["prompt"] + f"\nJudgment ID: {job['id']}\nUI: {job['ui_url']}\nLaunch error: {job['launch_error']}\nUse the HTTP API at {args.url}; your scoped token is in HARNESS_JUDGMENT_TOKEN. Poll GET /v1/judgments/{job['id']}. POST actions to /v1/judgments/{job['id']}/action. GET /v1/judgments/{job['id']}/artifact to inspect submitted code/README.\nWrite your final score object to {score_file} after exploration. The adapter will submit it during scoring.\n"
         prompt_file.write_text(instructions, encoding="utf-8")
         client = Client(args.url, claimed["judgment_token"])
-        command = [s.replace("{prompt_file}", str(prompt_file)) for s in json.loads(args.command_json)]
+        command = [s.replace("{prompt_file}", str(prompt_file)) for s in argv]
         env = agent_environment(HARNESS_URL=args.url, HARNESS_JUDGMENT_ID=job["id"], HARNESS_JUDGMENT_TOKEN=claimed["judgment_token"],
                                 HARNESS_PROMPT_FILE=prompt_file, HARNESS_SCORE_FILE=score_file)
         process = None
@@ -265,7 +270,7 @@ def main():
     parser.add_argument("--token-file", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
     create = sub.add_parser("create")
-    create.add_argument("benchmark", choices=["chess960", "game_build"])
+    create.add_argument("benchmark", choices=["chess960", "game_build", "dataset_dashboard"])
     create.add_argument("--config", type=Path, help="Optional campaign JSON configuration")
     start = sub.add_parser("start")
     start.add_argument("campaign")
@@ -274,9 +279,20 @@ def main():
     coordinated = sub.add_parser("run-coordinator", help="Launch a service-owned iterative coordinator run")
     coordinated.add_argument("campaign")
     coordinated.add_argument("agent")
-    coordinated.add_argument("--profile", default="codex")
+    coordinated.add_argument("--profile", required=True)
     workflow = sub.add_parser("workflow", help="Read coordinator progress and accepted iterations")
     workflow.add_argument("run")
+    batch = sub.add_parser("benchmark-batch", help="Queue all three benchmarks for every supplied workspace")
+    batch.add_argument("config", type=Path)
+    batch_status = sub.add_parser("batch-status")
+    batch_status.add_argument("batch")
+    batch_stop = sub.add_parser("batch-stop")
+    batch_stop.add_argument("batch")
+    batch_dashboard = sub.add_parser("batch-add-dashboard", help="Add a dashboard run to every workspace in an existing batch")
+    batch_dashboard.add_argument("batch")
+    batch_dashboard.add_argument("--config", type=Path)
+    task = sub.add_parser("task", help="Fetch this planner's assigned benchmark")
+    task.add_argument("run", nargs="?", default=os.environ.get("HARNESS_RUN_ID"))
     submit = sub.add_parser("submit")
     submit.add_argument("run")
     submit.add_argument("workspace", type=Path)
@@ -295,11 +311,13 @@ def main():
     run.add_argument("agent")
     run.add_argument("workspace")
     run.add_argument("--command-json", required=True, help='Agent argv, e.g. ["my-agent", "--prompt-file", "{prompt_file}"]')
+    run.add_argument("--workspace-settings", required=True, type=Path)
     run.add_argument("--interval", type=float, default=1.0)
     judge = sub.add_parser("judge-worker")
     judge.add_argument("judge")
     judge.add_argument("workspace")
     judge.add_argument("--command-json", required=True)
+    judge.add_argument("--workspace-settings", required=True, type=Path)
     judge.add_argument("--once", action="store_true")
     args = parser.parse_args()
     token = args.token_file.read_text().strip() if args.token_file else args.token
@@ -316,6 +334,19 @@ def main():
     elif args.command == "workflow":
         result = client.request("GET", f"/v1/runs/{args.run}/coordinator")
         result.update(client.request("GET", f"/v1/runs/{args.run}/iterations"))
+    elif args.command == "benchmark-batch":
+        result = client.request("POST", "/v1/benchmark-batches", json.loads(args.config.read_text(encoding="utf-8-sig")))
+    elif args.command == "batch-status":
+        result = client.request("GET", f"/v1/benchmark-batches/{args.batch}")
+    elif args.command == "batch-stop":
+        result = client.request("POST", f"/v1/benchmark-batches/{args.batch}/stop", {})
+    elif args.command == "batch-add-dashboard":
+        config = json.loads(args.config.read_text(encoding="utf-8-sig")) if args.config else {}
+        result = client.request("POST", f"/v1/benchmark-batches/{args.batch}/dashboard", config)
+    elif args.command == "task":
+        if not args.run:
+            parser.error("task requires a run id or HARNESS_RUN_ID")
+        result = client.request("GET", f"/v1/runs/{args.run}/task")
     elif args.command == "submit":
         result = client.request("POST", f"/v1/runs/{args.run}/submissions", snapshot(args.workspace))
     elif args.command == "status":

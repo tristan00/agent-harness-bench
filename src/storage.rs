@@ -15,7 +15,7 @@ impl Store {
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;",
         )?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 2 {
+        if version > 3 {
             return Err("database belongs to a newer service version".into());
         }
         db.execute_batch("BEGIN;
@@ -28,7 +28,8 @@ impl Store {
           CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, at_ms INTEGER NOT NULL, run_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS iterations(run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL, digest TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(run_id,number));
           CREATE TABLE IF NOT EXISTS workflows(run_id TEXT PRIMARY KEY REFERENCES runs(id), data TEXT NOT NULL);
-          PRAGMA user_version=2; COMMIT;")?;
+          CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+          PRAGMA user_version=3; COMMIT;")?;
         Ok(Self { db })
     }
     fn one<T: DeserializeOwned>(&self, sql: &str, id: &str) -> Result<Option<T>> {
@@ -89,6 +90,18 @@ impl Store {
     }
     pub fn workflow(&self, run: &str) -> Result<Option<Value>> {
         self.one("SELECT data FROM workflows WHERE run_id=?", run)
+    }
+    pub fn batches(&self) -> Result<Vec<Value>> {
+        self.many("SELECT data FROM batches ORDER BY rowid", &[])
+    }
+    pub fn batch(&self, id: &str) -> Result<Value> {
+        self.one("SELECT data FROM batches WHERE id=?", id)?
+            .ok_or_else(|| "batch not found".into())
+    }
+    pub fn save_batch(&self, value: &Value) -> Result<()> {
+        self.db.execute("INSERT INTO batches VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+            params![value["id"].as_str().ok_or("batch id required")?, value.to_string()])?;
+        Ok(())
     }
     pub fn workflows(&self) -> Result<Vec<Value>> {
         self.many("SELECT data FROM workflows ORDER BY rowid", &[])

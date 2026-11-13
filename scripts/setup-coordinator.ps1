@@ -39,11 +39,23 @@ if (!(Test-Path -LiteralPath $profileFile)) {
     $profiles = @{codex=@{
         command=@($python, (Join-Path $PSScriptRoot 'coordinator.py'))
         coordinator_command=@($coordinator)
+        coordinator_url='http://127.0.0.1:4242'
+        workspace=@{}
         planner_command=@($python, (Join-Path $PSScriptRoot 'codex_planner.py'))
+        session_command=@($python, (Join-Path $PSScriptRoot 'template_session.py'))
+        session_planner_command=@($python, (Join-Path $PSScriptRoot 'template_planner.py'))
         workers=@{implementation=$worker;review=$worker;replan=$worker}
         capabilities=@('process','network')
         env=@{CODEX_BIN=$codex}
     }} | ConvertTo-Json -Depth 8
     [IO.File]::WriteAllText($profileFile, $profiles, [Text.UTF8Encoding]::new($false))
+}
+$profiles = Get-Content -Raw -LiteralPath $profileFile | ConvertFrom-Json -AsHashtable
+if ($profiles.ContainsKey('codex')) {
+    if (!$profiles.codex.ContainsKey('workspace')) { $profiles.codex.workspace = @{} }
+    if (!$profiles.codex.ContainsKey('coordinator_url')) { $profiles.codex.coordinator_url = 'http://127.0.0.1:4242' }
+    if (!$profiles.codex.ContainsKey('session_command')) { $profiles.codex.session_command = @($python, (Join-Path $PSScriptRoot 'template_session.py')) }
+    if (!$profiles.codex.ContainsKey('session_planner_command')) { $profiles.codex.session_planner_command = @($python, (Join-Path $PSScriptRoot 'template_planner.py')) }
+    [IO.File]::WriteAllText($profileFile, ($profiles | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 }
 & (Join-Path $PSScriptRoot 'start.ps1') -SkipBuild -Bind $Bind -DataDirectory $DataDirectory -Binary (Join-Path $benchmarkBuild 'release\harness-bench.exe')

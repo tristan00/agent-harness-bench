@@ -13,6 +13,23 @@ pub struct Workflow {
     pub deadline_ms: i64,
 }
 
+pub fn stop_shared(root: &Path, id: &str) -> Result<()> {
+    let path = root.join("coordinator").join(id).join("launch.json");
+    if !path.exists() { return Ok(()); }
+    let launch: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let Some(url) = launch["profile"]["coordinator_url"].as_str() else { return Ok(()); };
+    let mut command = Command::new("curl");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command.args(["-q", "--silent", "--show-error", "--fail", "--max-time", "2", "--noproxy", "*",
+        "-H", "Content-Type: application/json", "-d", "{}", &format!("{url}/api/benchmark-runs/{id}/stop")]).output()?;
+    if !output.status.success() { return Err(format!("shared coordinator cleanup failed: {}", String::from_utf8_lossy(&output.stderr)).into()); }
+    Ok(())
+}
+
 pub fn profiles(root: &Path) -> Result<Value> {
     let file = root.join("coordinator-profiles.json");
     if !file.exists() {

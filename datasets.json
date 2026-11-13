@@ -1,0 +1,43 @@
+[
+  {
+    "id": "nyc_yellow_taxi_2024_01",
+    "name": "NYC yellow taxi trips, January 2024",
+    "urls": [
+      "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet"
+    ],
+    "instructions": "Download the Parquet file. Dataset documentation: https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page"
+  },
+  {
+    "id": "owid_co2",
+    "name": "Our World in Data CO2 and greenhouse gas emissions",
+    "urls": [
+      "https://raw.githubusercontent.com/owid/co2-data/22d9a01321ddec951b36f2bfc66e05dc6ad50ad8/owid-co2-data.csv"
+    ],
+    "instructions": "CSV pinned to commit 22d9a01321ddec951b36f2bfc66e05dc6ad50ad8. Column definitions: https://raw.githubusercontent.com/owid/co2-data/22d9a01321ddec951b36f2bfc66e05dc6ad50ad8/owid-co2-codebook.csv"
+  },
+  {
+    "id": "uci_online_retail_ii",
+    "name": "UCI Online Retail II",
+    "urls": [
+      "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip"
+    ],
+    "instructions": "Download and extract the ZIP containing the Excel workbook. Account for both years/sheets. Documentation: https://archive.ics.uci.edu/dataset/502/online+retail+ii"
+  },
+  {
+    "id": "movielens_latest_small",
+    "name": "MovieLens latest small",
+    "urls": [
+      "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
+    ],
+    "instructions": "Download and extract the ZIP. Its README documents movies, ratings, tags and links. Record the download checksum because this stable URL can change. Documentation: https://grouplens.org/datasets/movielens/latest/"
+  },
+  {
+    "id": "openflights",
+    "name": "OpenFlights airports and routes",
+    "urls": [
+      "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat",
+      "https://raw.githubusercontent.com/jpatokal/openflights/master/data/routes.dat"
+    ],
+    "instructions": "Download both comma-delimited DAT files. They have no header rows. Record checksums because master can change. Column definitions: https://openflights.org/data.php"
+  }
+]

@@ -31,11 +31,12 @@ struct Session {
 pub struct Service {
     pub root: PathBuf,
     pub store: Mutex<Store>,
-    admin: String,
+    pub(crate) admin: String,
     judge_key: String,
     sessions: Mutex<HashMap<String, Session>>,
-    workflows: Mutex<HashMap<String, coordinator::Workflow>>,
-    address: Mutex<Option<String>>,
+    pub(crate) workflows: Mutex<HashMap<String, coordinator::Workflow>>,
+    pub(crate) address: Mutex<Option<String>>,
+    pub(crate) batch_lock: Mutex<()>,
     pub stopping: AtomicBool,
     _lock: File,
 }
@@ -43,6 +44,45 @@ pub struct Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dashboard_defaults_assignments_and_legacy_batch_extension() {
+        let (root, service, admin, _) = setup();
+        let campaign = service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"dataset_dashboard"})).unwrap();
+        assert_eq!(campaign["campaign"]["config"]["development_seconds"], 900);
+        let started = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":campaign["campaign"]["id"],"agent":"dashboard"})).unwrap();
+        let task_path = format!("/v1/runs/{}/task", started["run"]["id"].as_str().unwrap());
+        let task = service.route("GET", &task_path, started["run_token"].as_str().unwrap(), Value::Null).unwrap();
+        assert_eq!(task["dataset"], started["run"]["dataset"]);
+        assert!(task["prompt"].as_str().unwrap().contains(task["dataset"]["dataset"]["id"].as_str().unwrap()));
+        assert_eq!(service.route("GET", &task_path, "wrong", Value::Null).unwrap_err().0, 401);
+        let workspaces = root.path().join("workspaces");
+        fs::create_dir(&workspaces).unwrap();
+        let mut cases = Vec::new();
+        for index in 0..4 {
+            let path = workspaces.join(format!("workspace-{index}"));
+            fs::create_dir(&path).unwrap();
+            let mut settings = json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","prompts":{}});
+            for (role, filename) in [("project_planner", "PROJECT_PLANNER.md"), ("worker_protocol", "WORKER_PROTOCOL.md")] {
+                use sha2::{Digest, Sha256};
+                fs::write(path.join(filename), "Selected fixture instructions.").unwrap();
+                settings["prompts"][role] = json!({"candidate":"fixture.md","sha256":format!("{:x}", Sha256::digest(b"Selected fixture instructions."))});
+            }
+            for benchmark in ["chess960", "game_build"] {
+                cases.push(json!({"workspace":path,"workspace_name":format!("workspace-{index}/{benchmark}"),
+                    "benchmark":benchmark,"status":"deadline","settings":settings}));
+            }
+        }
+        let before = cases.clone();
+        let template = format!("Task {{benchmark_task}}\nWorkspace: {}", workspaces.join("{workspace_name}").display());
+        service.db().save_batch(&json!({"id":"legacy","status":"completed","cases":cases,"campaigns":{},"template":template})).unwrap();
+        let extended = service.append_dashboard("legacy", json!({})).unwrap();
+        assert_eq!(&extended["cases"].as_array().unwrap()[..8], before.as_slice());
+        assert_eq!(extended["cases"].as_array().unwrap().len(), 12);
+        assert_eq!(extended, service.append_dashboard("legacy", json!({})).unwrap());
+        let seeds: std::collections::HashSet<_> = extended["cases"].as_array().unwrap()[8..].iter().map(|c| c["dataset"]["seed"].as_u64().unwrap()).collect();
+        assert_eq!(seeds.len(), 4);
+    }
     fn setup() -> (crate::test_support::TestDir, Arc<Service>, String, String) {
         let root = crate::test_support::dir();
         let service = Service::open(root.path()).unwrap();
@@ -84,8 +124,36 @@ mod tests {
         assert!(s.db().judgments().unwrap().is_empty());
         s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
         s.evaluate_next().unwrap();
-        assert_eq!(s.db().judgments().unwrap().len(), 1);
-        assert_eq!(s.db().judgments().unwrap()[0].status, "pending");
+        assert!(s.db().judgments().unwrap().is_empty());
+        assert_eq!(s.db().run(id).unwrap().status, "failed");
+    }
+    #[test]
+    fn dashboard_scores_use_six_independent_criteria() {
+        let (_root, s, token, cid) = setup();
+        {
+            let db = s.db();
+            let mut c = db.campaign(&cid).unwrap();
+            c.config.benchmark = Benchmark::DatasetDashboard;
+            db.save_campaign(&c).unwrap();
+        }
+        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":cid,"agent":"dashboard-score"})).unwrap();
+        let run_id = started["run"]["id"].as_str().unwrap();
+        let judgment = Judgment { id:crate::id(), run_id:run_id.into(), status:"scoring".into(), judge:Some("fixture".into()),
+            started_at_ms:Some(now_ms()-2000), explore_deadline_ms:Some(now_ms()-1000), score_deadline_ms:Some(now_ms()+10000),
+            ui_url:None, launch_error:None, actions:0, successful_actions:0, action_elapsed_ms:0.0, peak_memory_bytes:0, cpu_time_ms:0 };
+        s.db().save_judgment(&judgment).unwrap();
+        let path = format!("/v1/judgments/{}/score", judgment.id);
+        let mut body = json!({"measurements":{"load_ms":12.0},"notes":"fixture"});
+        for key in ["completeness","information_architecture","prose_economy","animation","originality","performance"] {
+            body[key] = json!({"score":3,"evidence":"Observed fixture behavior"});
+        }
+        let mut invalid = body.clone(); invalid["animation"]["score"] = json!(6);
+        assert_eq!(s.route("POST", &path, &token, invalid).unwrap_err().0, 400);
+        let response = s.route("POST", &path, &token, body.clone()).unwrap();
+        assert_eq!(response["report"]["total_out_of_30"],18);
+        assert_eq!(response["report"]["mean_out_of_5"],3.0);
+        assert_eq!(response["report"]["benchmark"],"dataset_dashboard");
+        assert_eq!(s.route("POST", &path, &token, body).unwrap_err().0,409);
     }
     #[test]
     fn manual_enrollment_defers_scoring_but_preserves_run_deadlines() {
@@ -444,6 +512,7 @@ impl Service {
             root,
             sessions: Mutex::new(HashMap::new()),
             workflows: Mutex::new(HashMap::new()),
+            batch_lock: Mutex::new(()),
             address: Mutex::new(None),
             stopping: AtomicBool::new(false),
             _lock: lock,
@@ -451,7 +520,7 @@ impl Service {
         service.recover()?;
         Ok(service)
     }
-    fn db(&self) -> MutexGuard<'_, Store> {
+    pub(crate) fn db(&self) -> MutexGuard<'_, Store> {
         self.store.lock().expect("database mutex poisoned")
     }
     fn recover(&self) -> Result<()> {
@@ -463,6 +532,7 @@ impl Service {
                     .ok_or("invalid workflow")?
                     .to_owned();
                 workflow["status"] = json!("interrupted");
+                if let Err(error) = coordinator::stop_shared(&self.root, &id) { eprintln!("{error}"); }
                 workflow["error"] =
                     json!("Service restarted; last accepted completion is retained for scoring");
                 db.save_workflow(&id, &workflow)?;
@@ -540,6 +610,7 @@ impl Service {
             }
             for (id, _, _) in &finished {
                 workflows.remove(id);
+                if let Err(error) = coordinator::stop_shared(&self.root, id) { eprintln!("{error}"); }
             }
         }
         // Kill without acquiring the protocol mutex: a hung action cannot postpone termination.
@@ -586,7 +657,7 @@ impl Service {
                 c.status = "waiting".into();
                 db.save_campaign(&c)?;
             }
-            if c.config.benchmark == Benchmark::GameBuild && c.status == "scoring_requested" {
+            if c.config.benchmark != Benchmark::Chess960 && c.status == "scoring_requested" {
                 let runs = db.runs(&c.id)?;
                 if runs
                     .iter()
@@ -626,6 +697,8 @@ impl Service {
                 db.event(Some(&run.id), "judge_timeout", &j)?;
             }
         }
+        drop(db);
+        self.schedule_batches()?;
         Ok(())
     }
     fn prepare(&self, mut run: Run, config: &Config) -> Result<Run> {
@@ -662,11 +735,18 @@ impl Service {
         let campaigns = self.db().campaigns()?;
         for c in campaigns {
             let runs = self.db().runs(&c.id)?;
-            if c.config.benchmark == Benchmark::GameBuild {
+            if c.config.benchmark != Benchmark::Chess960 {
                 if c.status != "scoring_requested" {
                     continue;
                 }
                 if let Some(run) = runs.into_iter().find(|r| r.status == "frozen") {
+                    if run.submission_id.is_none() {
+                        let mut run = run;
+                        run.status = "failed".into();
+                        run.error = Some("No accepted submission before cutoff".into());
+                        self.db().save_run(&run)?;
+                        return Ok(());
+                    }
                     let run = self.prepare(run, &c.config)?;
                     let j = Judgment {
                         id: crate::id(),
@@ -865,7 +945,7 @@ impl Service {
         let claim_token = crate::id();
         let (mut j, run, c) = {
             let db = self.db();
-            let Some(mut j) = db.judgments()?.into_iter().find(|j| j.status == "pending") else {
+            let Some(mut j) = db.judgments()?.into_iter().find(|j| j.status == "pending" && body["run_id"].as_str().is_none_or(|id| j.run_id == id)) else {
                 return Ok(json!({"job":null}));
             };
             j.status = "starting".into();
@@ -936,7 +1016,7 @@ impl Service {
         db.save_run(&run)?;
         db.event(Some(&run.id), "judge_started", &j)?;
         Ok(
-            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge(&c),"run":run,"themes":c.themes}),
+            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge_for_run(&c, &run),"run":run,"themes":c.themes,"benchmark":c.config.benchmark}),
         )
     }
     fn action(&self, id: &str, token: &str, body: Value) -> ApiResult<Value> {
@@ -993,13 +1073,47 @@ impl Service {
     fn route(&self, method: &str, path: &str, token: &str, body: Value) -> ApiResult<Value> {
         let segments: Vec<_> = path.trim_matches('/').split('/').collect();
         match (method, segments.as_slice()) {
+            ("POST", ["v1", "benchmark-batches"]) => {
+                self.admin(token)?;
+                Ok(json!({"batch":self.create_batch(body)?}))
+            }
+            ("GET", ["v1", "benchmark-batches"]) => {
+                self.admin(token)?;
+                Ok(json!({"batches":self.db().batches()?.iter().map(crate::batch::public).collect::<Vec<_>>()}))
+            }
+            ("GET", ["v1", "benchmark-batches", id]) => {
+                self.admin(token)?;
+                Ok(json!({"batch":crate::batch::public(&self.db().batch(id)?)}))
+            }
+            ("POST", ["v1", "benchmark-batches", id, "stop"]) => {
+                self.admin(token)?;
+                Ok(json!({"batch":self.stop_batch(id)?}))
+            }
+            ("POST", ["v1", "benchmark-batches", id, "dashboard"]) => {
+                self.admin(token)?;
+                Ok(json!({"batch":self.append_dashboard(id, body)?}))
+            }
+            ("POST", ["v1", "benchmark-batches", id, "retry"]) => {
+                self.admin(token)?;
+                let name = body["benchmark"].as_str().ok_or_else(|| ApiError(400, "benchmark required".into()))?;
+                Ok(json!({"batch":self.retry_benchmark(id, name)?}))
+            }
+            ("GET", ["v1", "runs", id, "task"]) => {
+                self.run_auth(id, token)?;
+                let db = self.db();
+                let run = db.run(id)?;
+                let campaign = db.campaign(&run.campaign_id)?;
+                let mut task = json!({"run_id":id,"benchmark":campaign.config.benchmark,"prompt":prompts::builder_for_run(&campaign, &run)});
+                if let Some(dataset) = run.dataset { task["dataset"] = json!(dataset); }
+                Ok(task)
+            }
             ("GET", ["health"]) => Ok(
                 json!({"status":"ok","service":"agent-harness-bench","protocol_version":1,"server_time_ms":now_ms()}),
             ),
             ("GET", ["v1", "benchmarks"]) => {
                 self.admin(token)?;
                 Ok(
-                    json!({"benchmarks":["chess960","game_build"],"prompt_version":prompts::VERSION,"chess_defaults":Config::default(),"game_defaults":Config{benchmark:Benchmark::GameBuild,development_seconds:1800,..Config::default()}}),
+                    json!({"benchmarks":["chess960","game_build","dataset_dashboard"],"prompt_version":prompts::VERSION,"chess_defaults":Config::default(),"game_defaults":Config{benchmark:Benchmark::GameBuild,development_seconds:1800,..Config::default()},"dashboard_defaults":Config{benchmark:Benchmark::DatasetDashboard,development_seconds:900,..Config::default()},"datasets":crate::datasets::registry()}),
                 )
             }
             ("POST", ["v1", "campaigns"]) => {
@@ -1009,6 +1123,9 @@ impl Service {
                     && body.get("development_seconds").is_none()
                 {
                     config.development_seconds = 1800;
+                }
+                if config.benchmark == Benchmark::DatasetDashboard && body.get("development_seconds").is_none() {
+                    config.development_seconds = 900;
                 }
                 if body.get("seed").is_none() {
                     config.seed = u64::from_le_bytes(
@@ -1072,6 +1189,10 @@ impl Service {
             ("POST", ["v1", "campaigns", id, "score"]) => {
                 self.admin(token)?;
                 let db = self.db();
+                if db.batches()?.iter().any(|batch| batch["cases"].as_array().is_some_and(|cases|
+                    cases.iter().any(|case| case["campaign_id"] == *id && ["queued", "running"].contains(&case["status"].as_str().unwrap_or(""))))) {
+                    return Err(ApiError(409, "batch cases must finish before scoring".into()));
+                }
                 let mut c = db.campaign(id)?;
                 if !["enrolling", "awaiting_score", "waiting"].contains(&c.status.as_str()) {
                     return Err(ApiError(409, "campaign is not awaiting a manual scoring request".into()));
@@ -1081,7 +1202,7 @@ impl Service {
                 if c.config.benchmark == Benchmark::Chess960 && entries < 2 {
                     return Err(ApiError(409, "scoring requires at least two entries".into()));
                 }
-                if c.config.benchmark == Benchmark::GameBuild && runs.is_empty() {
+                if c.config.benchmark != Benchmark::Chess960 && runs.is_empty() {
                     return Err(ApiError(409, "game evaluation requires at least one run".into()));
                 }
                 c.enrollment_deadline_ms = now_ms();
@@ -1104,6 +1225,9 @@ impl Service {
                     .as_str()
                     .ok_or_else(|| ApiError(400, "profile required".into()))?;
                 let profile = coordinator::profile(&self.root, name)?;
+                if !crate::batch::allowed_agents(&profile["workspace"]) {
+                    return Err(ApiError(400, "profile.workspace requires explicit eligible planner and worker selections".into()));
+                }
                 let url = self
                     .address
                     .lock()
@@ -1167,6 +1291,7 @@ impl Service {
                     ));
                 }
                 let run = Run {
+                    dataset: (c.config.benchmark == Benchmark::DatasetDashboard).then(crate::datasets::random_assignment),
                     id: crate::id(),
                     campaign_id: campaign.into(),
                     agent: agent.into(),
@@ -1181,7 +1306,7 @@ impl Service {
                 db.insert_run(&run, &run_token)?;
                 db.event(Some(&run.id), "started", &run)?;
                 Ok(
-                    json!({"run":run,"run_token":run_token,"prompt":prompts::builder(&c),"config":c.config,"themes":c.themes,"server_time_ms":now}),
+                    json!({"run":run,"run_token":run_token,"prompt":prompts::builder_for_run(&c, &run),"config":c.config,"themes":c.themes,"server_time_ms":now}),
                 )
             }
             ("GET", ["v1", "runs", id]) => {
@@ -1299,8 +1424,6 @@ impl Service {
             ("POST", ["v1", "judgments", id, "action"]) => self.action(id, token, body),
             ("POST", ["v1", "judgments", id, "score"]) => {
                 self.judge_auth(id, token)?;
-                let score: GameScore = serde_json::from_value(body)?;
-                score.validate()?;
                 self.tick()?;
                 let db = self.db();
                 let mut j = db.judgment(id)?;
@@ -1313,12 +1436,24 @@ impl Service {
                 }
                 let mut run = db.run(&j.run_id)?;
                 let c = db.campaign(&run.campaign_id)?;
+                let (score, total, count) = if c.config.benchmark == Benchmark::DatasetDashboard {
+                    let score: DashboardScore = serde_json::from_value(body)?;
+                    score.validate()?;
+                    let total = score.total();
+                    (serde_json::to_value(score)?, total, 6)
+                } else {
+                    let score: GameScore = serde_json::from_value(body)?;
+                    score.validate()?;
+                    let total = score.total();
+                    (serde_json::to_value(score)?, total, 5)
+                };
                 let artifact = run
                     .submission_id
                     .as_deref()
                     .map(|id| db.artifact(id))
                     .transpose()?;
-                let report = json!({"benchmark":"game_build","prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":c.themes,"config":c.config,"judge":j.judge,"scores":score,"total_out_of_25":score.total(),"mean_out_of_5":f64::from(score.total())/5.0,"telemetry":j,"artifact":artifact});
+                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":c.themes,"dataset":run.dataset,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
+                report[if count == 5 {"total_out_of_25"} else {"total_out_of_30"}] = json!(total);
                 let tx = db
                     .db
                     .unchecked_transaction()

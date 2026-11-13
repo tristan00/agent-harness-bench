@@ -14,6 +14,8 @@ from harness import Client, snapshot
 from smoke import rejects, wait_for
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from prompt_fixture import selected_documents
 
 
 def main():
@@ -27,15 +29,18 @@ def main():
         data = Path(temporary)
         profiles = {}
         for name, example in [("chess960", "chess_python"), ("game_build", "game")]:
-            worker = [sys.executable, str(ROOT / "tests/workflow_fixture.py"), "work"]
+            prompt_workspace = data / f"prompts-{name}"
+            prompt_workspace.mkdir()
+            settings = selected_documents(prompt_workspace, {"planner":"sol_6_1_light", "worker":"sol_6_1_light", "updates":"events" if name == "chess960" else "poll"})
+            worker = [sys.executable, str(ROOT / "tests/workflow_fixture.py"), "work", "--model", "{model}", "--effort", "{effort}"]
             profiles[name] = {
                 "command": [sys.executable, str(ROOT / "scripts/coordinator.py")],
                 "coordinator_command": [str(args.coordinator.resolve())],
-                "planner_command": [sys.executable, str(ROOT / "tests/workflow_fixture.py"), "plan"],
+                "planner_command": [sys.executable, str(ROOT / "tests/workflow_fixture.py"), "plan", "--model", "{model}", "--effort", "{effort}"],
                 "workers": {"implementation": worker, "review": worker, "replan": worker},
                 "capabilities": ["process"],
                 "env": {"HARNESS_TEST_EXAMPLE": example, "HARNESS_TEST_PULSE": str(data / f"{name}.pulse")},
-                "workspace": {"updates": "events" if name == "chess960" else "poll"},
+                "workspace": settings, "prompt_workspace": str(prompt_workspace),
             }
         (data / "coordinator-profiles.json").write_text(json.dumps(profiles), encoding="utf-8")
         with socket.socket() as listener:

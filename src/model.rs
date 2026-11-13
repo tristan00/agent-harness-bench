@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 pub enum Benchmark {
     Chess960,
     GameBuild,
+    DatasetDashboard,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,7 +66,7 @@ impl Config {
         {
             return Err("pool_run_ids must contain at most 16 distinct run UUIDs".into());
         }
-        if self.benchmark == Benchmark::GameBuild && !self.pool_run_ids.is_empty() {
+        if self.benchmark != Benchmark::Chess960 && !self.pool_run_ids.is_empty() {
             return Err("game campaigns do not use chess pools".into());
         }
         for (name, n, max) in [
@@ -104,6 +105,8 @@ pub struct Campaign {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Run {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset: Option<crate::datasets::Assignment>,
     pub id: String,
     pub campaign_id: String,
     pub agent: String,
@@ -225,4 +228,33 @@ impl GameScore {
     pub fn total(&self) -> u16 {
         self.criteria().iter().map(|c| u16::from(c.score)).sum()
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DashboardScore {
+    pub completeness: Criterion,
+    pub information_architecture: Criterion,
+    pub prose_economy: Criterion,
+    pub animation: Criterion,
+    pub originality: Criterion,
+    pub performance: Criterion,
+    pub measurements: serde_json::Value,
+    pub notes: String,
+}
+impl DashboardScore {
+    pub fn criteria(&self) -> [&Criterion; 6] {
+        [&self.completeness, &self.information_architecture, &self.prose_economy,
+            &self.animation, &self.originality, &self.performance]
+    }
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.criteria().iter().any(|c| c.score > 5 || c.evidence.trim().is_empty() || c.evidence.len() > 10000) {
+            return Err("each dashboard criterion requires 0..5 and evidence".into());
+        }
+        if !self.measurements.is_object() || self.notes.len() > 20000 {
+            return Err("dashboard measurements must be an object with bounded notes".into());
+        }
+        Ok(())
+    }
+    pub fn total(&self) -> u16 { self.criteria().iter().map(|c| u16::from(c.score)).sum() }
 }

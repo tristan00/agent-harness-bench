@@ -49,7 +49,7 @@ Success returns 200 JSON. Errors return `{"error":"..."}` with 400 (validation),
 }
 ```
 
-`benchmark` is `chess960` or `game_build`. Omitting development time uses 600 for chess and 1800 for games. Omitting the seed generates one from OS randomness; returned config stores it. Theme words are sampled once per game campaign. Same seed, prompt version and implementation reproduce themes and chess schedule.
+`benchmark` is `chess960`, `game_build`, or `dataset_dashboard`. Omitting development time uses 600 seconds for chess, 1800 for games, and 900 for dashboards. Dashboards receive an independent random dataset assignment per workspace/run, persisted for later scoring. Omitting the seed generates one from OS randomness; returned config stores it. Theme words are sampled once per game campaign. Same seed, prompt version and implementation reproduce themes and chess schedule.
 
 Development/enrollment range: 1â€“86400 seconds. Exploration/scoring: 1â€“3600. Compilation: 1â€“1800. Start positions: 1â€“960; game cap: 2â€“2000 plies. Elo K: `(0,100]`. Up to 32 candidate runs per campaign; agent names are unique within a campaign. Up to 16 distinct `pool_run_ids` reference previously scored chess solutions with source snapshots in this database. They are rebuilt in fresh work directories; original scores are never overwritten. Baselines/imported entries appear in the pool standings but do not get new run records.
 
@@ -99,7 +99,7 @@ Web games set `ui:"web"`, bind loopback HTTP on `HARNESS_PORT`, and serve `/`. T
 
 ## Judge claim and score
 
-Claim body: `{"judge":"judge-harness/model-version"}`. No work: `{"job":null}`. Otherwise response contains `job`, `judgment_token`, `prompt`, `run`, `themes`. `job.ui_url` is local to the evaluator host. `launch_error` carries startup/build failures. The countdown starts after launch/readiness or a determined launch failure. The judge inspects the same frozen source through the artifact endpoint; there is no judge editing API.
+Claim body: `{"judge":"judge-harness/model-version"}` with optional `run_id` to claim only that run. No work: `{"job":null}`. Otherwise response contains `job`, `judgment_token`, `prompt`, `run`, `benchmark`, `themes`. `job.ui_url` is local to the evaluator host. `launch_error` carries startup/build failures. The countdown starts after launch/readiness or a determined launch failure. The judge inspects the same frozen source through the artifact endpoint; there is no judge editing API.
 
 During `exploring`, POST `{"action":"describe","params":{}}` and other actions to `/action`. The proxy responds with `ok`, `response` or `error`, and `elapsed_ms`; game output is untrusted content. The service kills the process tree at the cutoff and changes status to `scoring`. Only then submit:
 
@@ -118,6 +118,10 @@ During `exploring`, POST `{"action":"describe","params":{}}` and other actions t
 All five scores are integer 0â€“5 with nonempty evidence of at most 10000 bytes. Name 1â€“10 comparable published games. Notes are at most 20000 bytes. The service checks schema and lifecycle; it cannot verify an agent's subjective honesty. The final report contains all criteria, sum/25, mean/5, judge identity, prompt/config/themes, source hash/LOC and measured protocol/resource evidence. A scoring timeout or restart is an explicit evaluation failure, not five invented zeros.
 
 ## Service-managed coordinator workflows
+
+Dashboard judgments use the same lifecycle and endpoints. Their score object contains six criterion objects: `completeness`, `information_architecture`, `prose_economy`, `animation`, `originality` and `performance`, plus a `measurements` object and `notes`. Each criterion uses the same integer 0–5 and evidence validation as games. Measurements record browser load/paint/render/interaction observations and methods, with unavailable values explicitly disclosed. Dashboard reports contain `total_out_of_30`; game reports retain `total_out_of_25`. Both also expose `total`, `maximum` and `mean_out_of_5`. A run without any accepted submission is recorded as failed and receives no judge job.
+
+The [batch scoring command](scoring.md) performs the campaign requests, fresh reviewer launches and score submission automatically, then combines quality, source simplicity and deterministic framework metrics.
 
 See [coordinator workflow](coordinator.md#api-and-evidence) for `/v1/coordinator-profiles`, `/v1/coordinator-runs`, and run-scoped `/coordinator` and `/iterations` endpoints. These add completed-iteration submissions without changing the existing direct-agent snapshot API.
 

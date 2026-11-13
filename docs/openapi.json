@@ -565,7 +565,7 @@
     },
     "/v1/judges/claim": {
       "post": {
-        "summary": "Claim and launch game evaluation",
+        "summary": "Claim and launch game or dashboard evaluation",
         "security": [
           {
             "bearer": []
@@ -904,7 +904,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Score"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Score"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DashboardScore"
+                  }
+                ]
               }
             }
           }
@@ -1255,6 +1262,184 @@
           }
         }
       }
+    },
+    "/v1/benchmark-batches": {
+      "post": {
+        "summary": "Queue template planner benchmarks",
+        "x-auth-role": "admin",
+        "responses": {
+          "200": {
+            "description": "Success; see batches.md for response details"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "max_parallel": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 8,
+                    "description": "Maximum active benchmark tasks per batch, with one active task per workspace."
+                  },
+                  "order_seed": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional seed for the persisted workspace/benchmark shuffle. Generated randomly when omitted."
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List benchmark batches",
+        "x-auth-role": "admin",
+        "responses": {
+          "200": {
+            "description": "Success; see batches.md for response details"
+          }
+        }
+      }
+    },
+    "/v1/benchmark-batches/{id}": {
+      "get": {
+        "summary": "Read benchmark batch",
+        "x-auth-role": "admin",
+        "responses": {
+          "200": {
+            "description": "Success; see batches.md for response details"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/benchmark-batches/{id}/stop": {
+      "post": {
+        "summary": "Stop active cases and cancel queued cases",
+        "x-auth-role": "admin",
+        "responses": {
+          "200": {
+            "description": "Success; see batches.md for response details"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/task": {
+      "get": {
+        "summary": "Fetch assigned benchmark without timing metadata",
+        "x-auth-role": "run/admin",
+        "responses": {
+          "200": {
+            "description": "Success; see batches.md for response details"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/benchmark-batches/{id}/dashboard": {
+      "post": {
+        "summary": "Append independently randomized dashboard runs to existing workspaces",
+        "x-auth-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated batch with cases"
+          }
+        }
+      }
+    },
+    "/v1/benchmark-batches/{id}/retry": {
+      "post": {
+        "summary": "Retry terminal benchmark cases while retaining previous attempts",
+        "x-auth-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated batch with cases"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1506,6 +1691,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Optional run filter for deterministic batch claims"
           }
         },
         "required": [
@@ -1634,6 +1824,47 @@
           "iteration",
           "submission"
         ]
+      },
+      "DashboardScore": {
+        "type": "object",
+        "properties": {
+          "completeness": {
+            "$ref": "#/components/schemas/Criterion"
+          },
+          "information_architecture": {
+            "$ref": "#/components/schemas/Criterion"
+          },
+          "prose_economy": {
+            "$ref": "#/components/schemas/Criterion"
+          },
+          "animation": {
+            "$ref": "#/components/schemas/Criterion"
+          },
+          "originality": {
+            "$ref": "#/components/schemas/Criterion"
+          },
+          "performance": {
+            "$ref": "#/components/schemas/Criterion"
+          },
+          "measurements": {
+            "type": "object"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 20000
+          }
+        },
+        "required": [
+          "completeness",
+          "information_architecture",
+          "prose_economy",
+          "animation",
+          "originality",
+          "performance",
+          "measurements",
+          "notes"
+        ],
+        "additionalProperties": false
       }
     }
   }

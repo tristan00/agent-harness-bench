@@ -9,6 +9,8 @@ import time
 import urllib.parse
 
 from harness import ApiError, Client, agent_environment, snapshot, spawn_agent, stop_agent
+from agent_selection import workspace_settings, planner_command
+from workspace_prompts import copy_documents
 
 
 def save(path, value):
@@ -53,6 +55,8 @@ def main():
     launch = read(os.environ["HARNESS_WORKFLOW_REQUEST"])
     root = Path(os.environ["HARNESS_WORKFLOW_REQUEST"]).resolve().parent
     started, profile = launch["started"], launch["profile"]
+    settings = workspace_settings(profile["workspace"])
+    planner_argv = planner_command(profile["planner_command"], settings["planner"])
     run = started["run"]
     client = Client(launch["url"], started["run_token"])
     # Fetch current server time: startup latency must spend the development allowance.
@@ -60,6 +64,7 @@ def main():
     stop_at = time.monotonic() + max(0, run["deadline_ms"] - state["server_time_ms"]) / 1000
     workspace = root / "workspace"
     workspace.mkdir(exist_ok=True)
+    copy_documents(profile["prompt_workspace"], workspace, settings)
     control = workspace / ".harness"
     control.mkdir(exist_ok=True)
     (control / "benchmark.txt").write_text(started["prompt"], encoding="utf-8")
@@ -112,7 +117,7 @@ def main():
             return
         coordinator.request("PUT", "/api/config", {
             **profile["workers"], "capabilities": profile.get("capabilities", ["process"]),
-            "notify": [], "workspaces": {str(workspace): profile.get("workspace", {})},
+            "notify": [], "workspaces": {str(workspace): settings},
         })
         iteration, attempt, previous, error = 1, 0, None, None
         while remaining():
@@ -120,13 +125,13 @@ def main():
             directory = root / f"plan-{iteration}-{attempt}"
             directory.mkdir()
             request_file, result_file = directory / "request.json", directory / "result.json"
-            request = {"protocol": 1, "benchmark": started["config"]["benchmark"], "prompt": started["prompt"],
+            request = {"protocol": 1, "workspace_settings": settings, "benchmark": started["config"]["benchmark"], "prompt": started["prompt"],
                        "workspace": str(workspace), "iteration": iteration, "previous_completion": previous, "error": error}
             save(request_file, request)
             update("planning", iteration=iteration, attempt=attempt, error=error)
             planner_env = {**env, "HARNESS_PLANNER_REQUEST": str(request_file), "HARNESS_PLANNER_RESULT": str(result_file)}
             with (directory / "planner.log").open("wb") as log:
-                planner = spawn_agent(profile["planner_command"], workspace, planner_env, log)
+                planner = spawn_agent(planner_argv, workspace, planner_env, log)
             while remaining() and planner.poll() is None:
                 pause()
             if not remaining():

@@ -1,6 +1,8 @@
 # Service-managed coordinator runs
 
-Exactly two benchmark types are available: `chess960` and `game_build`.
+For fresh planners that directly manage their own tasks using the approved prompt template, use [template planner batches](batches.md). The iteration adapter documented below is the older structured-plan mode and remains available separately.
+
+Available benchmark types are `chess960`, `game_build`, and `dataset_dashboard`. Dashboard development defaults to 900 seconds and its scoring phase is deferred.
 
 ```mermaid
 flowchart LR
@@ -48,8 +50,9 @@ Chess scores only after an explicit `harness.py score CAMPAIGN_ID` request and a
 | `env` | Adapter environment, e.g. `CODEX_BIN` or local model configuration |
 | `capabilities` | Worker capabilities, e.g. `process`, `network`, `browser` |
 | `workspace` | Coordinator workspace settings for the run workspace, e.g. `{"updates":"events"}` to wait on coordinator events instead of polling |
+| `prompt_workspace` | Existing workspace created with selected instruction documents; the legacy adapter verifies and copies them into its run workspace |
 
-No model SDK is required. Copy a profile and change commands or environment to exchange models. For the provided Codex planner, `HARNESS_CODEX_ARGS` is a JSON argv array supporting normal Codex model/local-provider options. This variable affects the planner only. Workers can use the coordinator's `--codex` adapter or any local executable reading `COORDINATOR_REQUEST` and writing `COORDINATOR_RESULT`. Configure every stage explicitly. Setup and validation use Codex or deterministic local protocol fixtures; no other hosted model provider is invoked.
+The profile's `workspace` object must explicitly contain eligible `planner` and `worker` selections and the `prompts` candidate names/hashes returned by workspace creation. Its `prompt_workspace` supplies the selected `PROJECT_PLANNER.md` and `WORKER_PROTOCOL.md`, each 1–200 words. Eligible selections are `luna_6_high` (`gpt-6-luna` / `high`), `sol_6_1_light` (`gpt-6.1-sol` / `low`) and `sol_6_1_medium` (`gpt-6.1-sol` / `medium`). The built-in adapters pass the selected model and effort explicitly for every stage. Custom planner and worker argv arrays must include `{model}` and `{effort}` placeholders. Missing selections or unsupported candidates reject the launch. Planner model/effort overrides from `HARNESS_CODEX_ARGS` are not used.
 
 Planner commands receive `HARNESS_PLANNER_REQUEST` and `HARNESS_PLANNER_RESULT` absolute paths. Read request JSON, write result JSON, and exit zero. Requests include `protocol:1`, `prompt`, `benchmark`, `workspace`, `iteration`, `previous_completion` (accepted iteration plus compact coordinator tasks) and `error`. Time limits are never sent to agents. A planner that writes `usage.json` beside its request has its token counts summed into workflow progress as `planner_usage`; worker totals appear as `worker_tokens`. A result is:
 

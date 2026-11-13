@@ -1,14 +1,20 @@
 # Agent Harness Bench
 
-A Rust API service that gives external coding agents timed tasks, freezes their last accepted source snapshot, runs evaluations, and stores evidence and scores in SQLite. Clocks, state transitions, chess rules, tournaments, process termination and score validation are implemented in code. Only the game benchmark's subjective ratings come from a judge agent.
+## Assigned planner session
+
+When launched with `HARNESS_RUN_ID`, fetch your assigned task with `python D:\harness_work\agent-harness-bench\scripts\harness.py task`. The client uses `HARNESS_URL` and the scoped `HARNESS_RUN_TOKEN` automatically. Use `COORDINATOR_URL` for the coordinator API. Submit a complete solution with `harness.py submit RUN_ID SOLUTION_DIRECTORY`, where that directory contains `harness.json`. The planner manages tasks and decides when each complete iteration is ready to submit.
+
+For the controller's repeatable batch setup, see [template planner batches](docs/batches.md).
+
+A Rust API service that gives external coding agents timed tasks, freezes their last accepted source snapshot, runs evaluations, and stores evidence and scores in SQLite. Clocks, state transitions, chess rules, tournaments, process termination and score validation are implemented in code. Game and dashboard quality ratings come from fresh judge agents; the scoring process and all other metrics are controlled by code. See [one-command batch scoring](docs/scoring.md).
 
 ## Run on this Windows machine
 
 For the **service-managed agent coordinator workflow**, run `./scripts/setup-coordinator.ps1`.
 It builds both Rust services, configures Codex as the initial planner/worker adapter, and starts the
 benchmark service at `http://127.0.0.1:8741`. State and build output default to `../runtime`, outside
-both source repositories. Each run starts a private coordinator.
-See [coordinator workflow](docs/coordinator.md) for starting either benchmark and exchanging models.
+both source repositories. Template batches use the shared coordinator board with workspace filters.
+The legacy single-run adapter starts a private coordinator; see [coordinator workflow](docs/coordinator.md).
 
 ```powershell
 # Fetch once, then build and start a hidden background service.
@@ -24,11 +30,12 @@ The build helper uses MSVC with bundled SQLite when installed, with a GNU/rust-l
 
 The service generates `data/admin-token` and `data/judge-token` (or accepts `HARNESS_API_TOKEN` / `HARNESS_JUDGE_TOKEN`, minimum 24 characters). The admin token is for the trusted harness controller; each builder gets its own scoped run token. Judges claim work using the judge token and receive a scoped judgment token. No LLM provider or credential is built in: connect your existing agent CLI using the adapters below.
 
-## Two usable benchmarks
+## Three benchmarks
 
 | Benchmark | Development default | Evaluation | Recorded metrics |
 | --- | --- | --- | --- |
 | `chess960` | 600 seconds | Seeded double round robin, every entry starts at 1500 Elo, K=32 | Elo change, nonblank physical source lines, W/D/L, forfeits, full game traces |
+| `dataset_dashboard` | 900 seconds | Fresh judge explores for 300 seconds, then 120 seconds to score | Six 0–5 ratings with evidence, browser measurements, independent dataset assignment and provenance |
 | `game_build` | 1800 seconds, configurable | Judge explores for 300 seconds, service stops game, then 120 seconds to score | Five 0–5 ratings, evidence, total/mean, API latency/counts, CPU and memory samples |
 
 The game development default is an implementation choice; the requested 10-minute chess and 5-minute game exploration limits are the defaults. All time limits are campaign configuration. Theme selection uses three distinct categories from cultures, historical civilizations, periods and fields of study. The service generates a random seed unless you supply one; every builder in a campaign receives the same theme words and prompt version.
@@ -39,6 +46,8 @@ Game agents receive the requested genre/theme requirements plus the executable c
 
 ## Start agents through the API
 
+Every agent launch requires explicit workspace selections. `workspace-settings.json` contains explicit selections, for example `{"planner":"luna_6_high","worker":"sol_6_1_light"}`. Eligible candidates are `luna_6_high` (`gpt-6-luna`, `high`), `sol_6_1_light` (`gpt-6.1-sol`, `low`) and `sol_6_1_medium` (`gpt-6.1-sol`, `medium`). Custom agent commands must include both `{model}` and `{effort}` placeholders.
+
 ```powershell
 $campaign = python scripts/harness.py --token-file data/admin-token create chess960 | ConvertFrom-Json
 $campaignId = $campaign.campaign.id
@@ -46,7 +55,7 @@ $campaignId = $campaign.campaign.id
 # Repeat for each agent, in separate controller processes before enrollment closes.
 # The agent argv is yours: any CLI can read the supplied prompt file.
 python scripts/harness.py --token-file data/admin-token run-agent $campaignId agent-a C:/bench-work/agent-a `
-  --command-json '["my-agent", "--prompt-file", "{prompt_file}"]'
+  --workspace-settings workspace-settings.json --command-json '["my-agent", "--model", "{model}", "--effort", "{effort}", "--prompt-file", "{prompt_file}"]'
 ```
 
 Game enrollment defaults to 60 seconds and is configurable through `enrollment_seconds`. Chess enrollment has no automatic expiry. `close CAMPAIGN_ID` ends enrollment early, without shortening any builder's development clock. Chess enrollment stays open until explicitly closed. Closing does not score. Run `python scripts/harness.py --token-file data/admin-token score CAMPAIGN_ID` to explicitly request a tournament; it starts after every builder's clock expires. Games remain frozen until an explicit `score CAMPAIGN_ID` request; only then are they prepared and queued for a judge.
@@ -69,7 +78,7 @@ Use a short development limit in a configuration file for a quick trial; product
 
 ```powershell
 python scripts/harness.py --token-file data/judge-token judge-worker judge-a C:/bench-work/judges `
-  --command-json '["my-judge-agent", "--prompt-file", "{prompt_file}"]'
+  --workspace-settings workspace-settings.json --command-json '["my-judge-agent", "--model", "{model}", "--effort", "{effort}", "--prompt-file", "{prompt_file}"]'
 ```
 
 The judge needs browser/desktop tools on the evaluation machine to inspect the UI and HTTP tools for fast programmatic gameplay. The worker claims a ready job, launches your judge with its prompt and scoped token, and submits the judge's `score.json` after exploration stops. The judge can also call the score API itself. The service owns the game's process tree and enforces its deadline even if the judge does not cooperate. The adapter waits for the result and then stops the judge command. Use `--once` for a single available job.
