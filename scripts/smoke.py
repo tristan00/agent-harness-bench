@@ -131,11 +131,13 @@ def main():
             game_campaign = admin.request("POST", "/v1/campaigns", {"benchmark": "game_build", "development_seconds": 1,
                 "enrollment_seconds": 60, "judge_seconds": 2, "score_seconds": 5, "seed": 200})["campaign"]
             built = admin.request("POST", "/v1/runs", {"campaign_id": game_campaign["id"], "agent": "game-fixture"})
+            assert len(built["themes"]) == 3 and built["themes"] == built["run"]["inspiration"]["themes"]
             gc = Client(url, built["run_token"])
             gc.request("POST", f'/v1/runs/{built["run"]["id"]}/submissions', snapshot(ROOT / "examples" / "game"))
             admin.request("POST", f'/v1/campaigns/{game_campaign["id"]}/score', {})
             claimed = wait_for(lambda: (r if r["job"] else None) if (r := judge.request("POST", "/v1/judges/claim", {"judge": "fixture-test"})) else None)
             job = claimed["job"]
+            assert claimed["themes"] == built["themes"]
             assert job["launch_error"] is None, job
             jc = Client(url, claimed["judgment_token"])
             assert judge.request("POST", "/v1/judges/claim", {"judge": "second"})["job"] is None
@@ -165,6 +167,7 @@ def main():
             rejects(jc, "POST", endpoint + "/score", wrong, 400)
             report = jc.request("POST", endpoint + "/score", score)["report"]
             assert report["total_out_of_25"] == 15 and report["mean_out_of_5"] == 3
+            assert report["themes"] == built["themes"] and report["inspiration"] == built["run"]["inspiration"]
             rejects(jc, "POST", endpoint + "/score", score, 409)
             evidence["game"] = report
             evidence["checks"] += ["random reproducible themes", "exclusive judge claims", "GUI and API share simulation", "game killed at judge deadline", "early/invalid/duplicate scores rejected", "five scores and telemetry persisted"]
@@ -196,15 +199,21 @@ def main():
             wait_for(lambda: Client(url).request("GET", "/health"))
             assert ac.request("GET", f'/v1/runs/{a["run"]["id"]}')["report"] == result
             assert gc.request("GET", f'/v1/runs/{built["run"]["id"]}')["report"] == report
-            recovered = wait_for(lambda: (r if r["run"]["status"] == "queued" else None)
+            recovered = wait_for(lambda: (r if r["run"]["status"] == "failed" else None)
                 if (r := admin.request("GET", f'/v1/runs/{unfinished["run"]["id"]}')) else None)
             assert recovered["run"]["deadline_ms"] == unfinished["run"]["deadline_ms"]
-            assert "no submission" in recovered["run"]["error"]
+            assert "no accepted submission" in recovered["run"]["error"].lower()
+            assert not any(j["run_id"] == unfinished["run"]["id"] for j in admin.request("GET", "/v1/judgments")["judgments"])
             evidence["checks"].append("restart preserves scores and enforces elapsed deadlines")
+            timeout_campaign = admin.request("POST", "/v1/campaigns", {"benchmark":"game_build", "development_seconds":1, "judge_seconds":1, "score_seconds":1})["campaign"]
+            timeout_run = admin.request("POST", "/v1/runs", {"campaign_id":timeout_campaign["id"], "agent":"broken-submission"})
+            admin.request("POST", f'/v1/runs/{timeout_run["run"]["id"]}/submissions', {"manifest":{"run":["missing-fixture-program"],"ui":"web"},"files":[{"path":"main.py","text":"print('fixture')"}]})
+            admin.request("POST", f'/v1/campaigns/{timeout_campaign["id"]}/score', {})
+            wait_for(lambda: any(j["run_id"] == timeout_run["run"]["id"] and j["status"] == "pending" for j in admin.request("GET", "/v1/judgments")["judgments"]))
             missing = judge.request("POST", "/v1/judges/claim", {"judge": "timeout-fixture"})
             assert missing["job"]["launch_error"] is not None
-            wait_for(lambda: admin.request("GET", f'/v1/runs/{unfinished["run"]["id"]}')["run"]["status"] == "failed")
-            assert admin.request("GET", f'/v1/runs/{unfinished["run"]["id"]}')["report"] is None
+            wait_for(lambda: admin.request("GET", f'/v1/runs/{timeout_run["run"]["id"]}')["run"]["status"] == "failed")
+            assert admin.request("GET", f'/v1/runs/{timeout_run["run"]["id"]}')["report"] is None
             evidence["checks"].append("missing solution diagnostics and score timeout produce no fabricated scores")
         finally:
             process.terminate()

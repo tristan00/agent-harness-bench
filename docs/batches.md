@@ -8,7 +8,7 @@ All planners connect to the shared coordinator at the profile's `coordinator_url
 
 The scheduler dispatches cases and enforces deadlines. Planners choose tasks, monitor work and submit completed iterations. An early planner exit leaves workers their remaining allowance. New batches shuffle all workspace/benchmark pairs once before enqueueing, mixing benchmark types and workspace order. Optional `order_seed` reproduces that shuffle; otherwise a random seed is generated. The seed, algorithm version and resulting queue are persisted, so restart does not reshuffle. Benchmarks run sequentially within each workspace, with `max_parallel` limiting active cases per batch (default **8**). The scheduler skips busy workspaces while filling available slots. Queued cases have no ticking clock. Service restart marks active cases interrupted and stops their shared-board tasks while retaining accepted submissions. `batch-stop` stops active planners and scoped tasks and cancels queued cases.
 
-Dashboard cases receive independent random dataset assignments when enqueued. Repeats are possible. The selected metadata, registry version and selection seed are saved in the case and run, so restart and later scoring retain the assignment. The default allowance is 900 seconds, including downloading. The five-source rotation is in `datasets.json`. USGS was excluded because it needs pagination, and World Bank was excluded after a timeout. All five retained sources passed two complete downloads and checksum comparisons.
+Game cases receive independent three-word inspiration assignments when enqueued, stored as `case.inspiration` and copied into `run.inspiration`. Builder prompts, reviewer prompts and reports use that run’s own words. Dashboard cases receive independent random dataset assignments when enqueued. Repeats are possible. The selected metadata, registry version and selection seed are saved in the case and run, so restart and later scoring retain the assignment. The default allowance is 900 seconds, including downloading. The five-source rotation is in `datasets.json`. USGS was excluded because it needs pagination, and World Bank was excluded after a timeout. All five retained sources passed two complete downloads and checksum comparisons.
 
 Scoring is an explicit, separate step. The [batch scoring command](scoring.md) starts the chess tournament, launches fresh game/dashboard reviewers, calculates execution metrics and writes the combined workspace ranking without a supervising agent.
 
@@ -32,8 +32,8 @@ Example `batch.json` (directories must contain only their selected documents; co
     {"path": "D:/harness_work/workspaces/experiment_1", "settings": {"planner": "luna_6_high", "worker": "sol_6_1_light", "updates": "poll", "prompts": {"project_planner": {"candidate": "planner.md", "sha256": "ACTUAL_HASH"}, "worker_protocol": {"candidate": "worker.md", "sha256": "ACTUAL_HASH"}}}}
   ],
   "task_configs": {
-    "chess960": {"development_seconds": 1200, "seed": 960},
-    "game_build": {"development_seconds": 1800, "seed": 960},
+    "chess960": {"development_seconds": 1200},
+    "game_build": {"development_seconds": 1800},
     "dataset_dashboard": {"development_seconds": 900}
   }
 }
@@ -55,3 +55,7 @@ Run `scripts/smoke_batch.py --binary PATH --coordinator PATH --evidence PATH` to
 `harness.py batch-add-dashboard BATCH_ID` adds one dashboard case per workspace to an older batch, preserving existing cases. Repeating it returns the original assignments. `POST /v1/benchmark-batches/ID/retry` with `{ "benchmark": "game_build" }` explicitly retries terminal cases in fresh directories and preserves prior attempts in `previous_cases`.
 
 Retry preserves the selected planner and worker values; it never substitutes a default model. Retired model selections remain readable in historical records but cannot start new workspace runs.
+
+New chess campaigns draw a fresh random seed by default, producing four random starts sampled without replacement and played in both colors. Supply `task_configs.chess960.seed` only to intentionally replay a tournament schedule. That seed does not control game inspiration or dashboard datasets. Explicit retries resample game/dashboard assignments, and resample chess seeds when the original new batch did not explicitly pin one; restart never resamples saved assignments. Legacy batches keep their saved campaign seed and theme behavior.
+
+To stage a compiled update without interrupting a batch, write its absolute executable path to `DATA/next-service-binary`. The next `scripts/start.ps1` call without an explicit `-Binary` uses it and consumes the marker after successful startup. The helper refuses to start over an existing service. This does not schedule or perform a restart.

@@ -280,6 +280,23 @@ mod tests {
             assert_eq!(all.len(), 3 * players * (players - 1), "each ordered pairing appears once per position");
         }
     }
+    #[test]
+    fn new_tournaments_randomize_positions_while_explicit_seeds_replay() {
+        let configurations: Vec<_> = (0..16).map(|_| Config::default()).collect();
+        let seeds: std::collections::HashSet<_> = configurations.iter().map(|c| c.seed).collect();
+        assert_eq!(seeds.len(), 16);
+        let positions: std::collections::HashSet<Vec<_>> = configurations.iter().map(|c| {
+            let mut starts: Vec<_> = rounds(c, 2).iter().flatten().map(|game| game.position).collect();
+            starts.sort();
+            starts.dedup();
+            assert_eq!(starts.len(), 4);
+            starts
+        }).collect();
+        assert!(positions.len() > 1);
+        let first: Config = serde_json::from_value(serde_json::json!({"seed":960})).unwrap();
+        let second: Config = serde_json::from_value(serde_json::json!({"seed":960})).unwrap();
+        assert_eq!(serde_json::to_value(rounds(&first, 4)).unwrap(), serde_json::to_value(rounds(&second, 4)).unwrap());
+    }
     fn record(white: usize, black: usize, white_score: f64) -> GameRecord {
         GameRecord {
             pairing: Pairing { white, black, position: 518 },

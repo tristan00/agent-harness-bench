@@ -133,9 +133,12 @@ def main():
                 frozen_pulses([directory / "planner.pulse", directory / "worker.pulse"])
                 state = client.request("GET", f'/v1/runs/{case["run_id"]}')
                 assert state["run"]["status"] == "frozen" and state["run"]["submission_id"] and state["report"] is None
+                if case["benchmark"] == "game_build": assert state["run"]["inspiration"] == case["inspiration"]
+                if case["benchmark"] == "dataset_dashboard": assert state["run"]["dataset"] == case["dataset"]
                 rejects(client, "POST", f'/v1/runs/{case["run_id"]}/submissions', {}, 409)
             assert len(pids) == 6 and not client.request("GET", "/v1/judgments")["judgments"]
             evidence.update(cases=6, peak_parallel=peak, exact_prompts=True, only_selected_documents_at_start=True, prompt_hashes_verified=True, settings_preserved=True,
+                            per_run_inspiration_preserved=True, per_run_dataset_preserved=True,
                             fresh_planners=True, queued_clocks_not_started=True, exited_planner_workers_preserved=True,
                             deadline_kills_planner_and_worker_descendants=True, late_upload_rejected=True, scoring_deferred=True)
             (data / "coordinator-profiles.json").write_text(json.dumps({"fixture": profile}))

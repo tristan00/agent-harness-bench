@@ -62,6 +62,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn game_inspiration_is_per_run_persisted_and_used_by_builders_and_judges() {
+        let (root, service, admin, _) = setup();
+        let campaign = service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"game_build","seed":960})).unwrap()["campaign"].clone();
+        assert_eq!(campaign["themes"], json!([]));
+        let mut assigned = Vec::new();
+        for name in ["first", "second"] {
+            let started = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":campaign["id"],"agent":name})).unwrap();
+            let run: Run = serde_json::from_value(started["run"].clone()).unwrap();
+            let c = service.db().campaign(&run.campaign_id).unwrap();
+            let inspiration = run.inspiration.as_ref().unwrap();
+            assert_eq!(inspiration.themes.len(), 3);
+            assert_eq!(inspiration.themes, prompts::themes(inspiration.seed));
+            assert_eq!(started["themes"], json!(inspiration.themes));
+            let task = service.route("GET", &format!("/v1/runs/{}/task",run.id), &admin, Value::Null).unwrap();
+            assert_eq!(task["inspiration"], json!(inspiration));
+            assert_eq!(task["prompt"], started["prompt"]);
+            for theme in &inspiration.themes {
+                assert!(started["prompt"].as_str().unwrap().contains(theme));
+                assert!(prompts::judge_for_run(&c, &run, 0).contains(theme));
+            }
+            assigned.push(run);
+        }
+        assert_ne!(assigned[0].inspiration.as_ref().unwrap().seed, assigned[1].inspiration.as_ref().unwrap().seed);
+        drop(service);
+        let reopened = Service::open(root.path()).unwrap();
+        for run in assigned { assert_eq!(reopened.db().run(&run.id).unwrap().inspiration, run.inspiration); }
+    }
+
+    #[test]
+    fn legacy_run_prompts_keep_the_original_campaign_themes() {
+        let (_root, service, admin, cid) = setup();
+        let mut campaign = service.db().campaign(&cid).unwrap();
+        campaign.config.benchmark = Benchmark::GameBuild;
+        campaign.config.seed = 960;
+        campaign.themes = prompts::themes(960);
+        service.db().save_campaign(&campaign).unwrap();
+        let started = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":cid,"agent":"legacy"})).unwrap();
+        let mut saved = started["run"].clone();
+        saved.as_object_mut().unwrap().remove("inspiration");
+        let legacy: Run = serde_json::from_value(saved).unwrap();
+        assert!(legacy.inspiration.is_none());
+        assert_eq!(prompts::builder_for_run(&campaign, &legacy), prompts::builder(&campaign));
+        assert_eq!(prompts::judge_for_run(&campaign, &legacy, 0), prompts::judge(&campaign));
+        assert_eq!(prompts::themes_for_run(&campaign, &legacy), campaign.themes);
+    }
+
+    #[test]
     fn dashboard_defaults_assignments_and_legacy_batch_extension() {
         let (root, service, admin, _) = setup();
         let campaign = service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"dataset_dashboard"})).unwrap();
@@ -1147,7 +1194,7 @@ impl Service {
         db.save_run(&run)?;
         db.event(Some(&run.id), "judge_started", &j)?;
         Ok(
-            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge_for_run(&c, &run, completed_requests(&db, &run.id)?.len()),"run":run,"themes":c.themes,"benchmark":c.config.benchmark}),
+            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge_for_run(&c, &run, completed_requests(&db, &run.id)?.len()),"run":run,"themes":prompts::themes_for_run(&c, &run),"benchmark":c.config.benchmark}),
         )
     }
     fn action(&self, id: &str, token: &str, body: Value) -> ApiResult<Value> {
@@ -1235,6 +1282,10 @@ impl Service {
                 let run = db.run(id)?;
                 let campaign = db.campaign(&run.campaign_id)?;
                 let mut task = json!({"run_id":id,"benchmark":campaign.config.benchmark,"prompt":prompts::builder_for_run(&campaign, &run)});
+                if campaign.config.benchmark == Benchmark::GameBuild {
+                    task["themes"] = json!(prompts::themes_for_run(&campaign, &run));
+                    if let Some(inspiration) = &run.inspiration { task["inspiration"] = json!(inspiration); }
+                }
                 if let Some(dataset) = run.dataset { task["dataset"] = json!(dataset); }
                 Ok(task)
             }
@@ -1264,11 +1315,6 @@ impl Service {
                 if config.benchmark == Benchmark::MazeGame && body.get("judge_seconds").is_none() {
                     config.judge_seconds = 600;
                 }
-                if body.get("seed").is_none() {
-                    config.seed = u64::from_le_bytes(
-                        uuid::Uuid::new_v4().as_bytes()[..8].try_into().unwrap(),
-                    );
-                }
                 for id in &config.pool_run_ids {
                     let db = self.db();
                     let run = db.run(id)?;
@@ -1287,11 +1333,7 @@ impl Service {
                 let now = now_ms();
                 let c = Campaign {
                     id: crate::id(),
-                    themes: if config.benchmark == Benchmark::GameBuild {
-                        prompts::themes(config.seed)
-                    } else {
-                        vec![]
-                    },
+                    themes: vec![],
                     enrollment_deadline_ms: now + config.enrollment_seconds as i64 * 1000,
                     config,
                     created_at_ms: now,
@@ -1428,6 +1470,7 @@ impl Service {
                     ));
                 }
                 let run = Run {
+                    inspiration: (c.config.benchmark == Benchmark::GameBuild).then(prompts::random_inspiration),
                     dataset: (c.config.benchmark == Benchmark::DatasetDashboard).then(crate::datasets::random_assignment),
                     id: crate::id(),
                     campaign_id: campaign.into(),
@@ -1444,7 +1487,7 @@ impl Service {
                 db.event(Some(&run.id), "started", &run)?;
                 Ok(
                     {
-                        let mut started = json!({"run":run,"run_token":run_token,"prompt":prompts::builder_for_run(&c, &run),"config":started_config(&c.config),"themes":c.themes,"server_time_ms":now});
+                        let mut started = json!({"run":run,"run_token":run_token,"prompt":prompts::builder_for_run(&c, &run),"config":started_config(&c.config),"themes":prompts::themes_for_run(&c, &run),"server_time_ms":now});
                         if c.config.benchmark == Benchmark::MazeGame { started["handoff_token"] = json!(handoff_token(&self.admin, &run.id)); }
                         started
                     },
@@ -1647,7 +1690,7 @@ impl Service {
                     .as_deref()
                     .map(|id| db.artifact(id))
                     .transpose()?;
-                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":c.themes,"dataset":run.dataset,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
+                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":prompts::themes_for_run(&c, &run),"inspiration":run.inspiration,"dataset":run.dataset,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
                 report[format!("total_out_of_{}", count * 5)] = json!(total);
                 if let Some(progress) = progress {
                     report["prompt_version"] = json!(prompts::MAZE_VERSION);

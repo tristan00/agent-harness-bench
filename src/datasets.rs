@@ -33,9 +33,7 @@ pub fn select(seed: u64) -> Assignment {
 }
 
 pub fn random_assignment() -> Assignment {
-    select(u64::from_le_bytes(
-        uuid::Uuid::new_v4().as_bytes()[..8].try_into().unwrap(),
-    ))
+    select(crate::random_seed())
 }
 
 #[cfg(test)]
