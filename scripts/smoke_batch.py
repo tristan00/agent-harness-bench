@@ -185,7 +185,7 @@ def main():
             service.terminate(); service.wait(timeout=5)
             for task in board_client.request("GET", "/api/state")["tasks"]:
                 if task["active"]:
-                    board_client.request("POST", f'/api/tasks/{task["id"]}/stop', {"actor":"planner", "reason":"Fixture cleanup"})
+                    board_client.request("POST", f'/api/tasks/{task["id"]}/stop', {})
             time.sleep(0.3)
             board.terminate(); board.wait(timeout=5); log.close()
     args.evidence.parent.mkdir(parents=True, exist_ok=True)

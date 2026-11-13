@@ -462,14 +462,13 @@ mod tests {
         assert_eq!(service.route("POST", &other_path, &admin, json!({"action":"current"})).unwrap_err().0, 409);
     }
     #[test]
-    fn wipe_deletes_every_run_and_submission_after_explicit_confirmation() {
+    fn wipe_deletes_every_run_and_submission() {
         let (root, service, admin, _chess) = setup();
         let (id, token, _) = maze_campaign(&service, &admin);
         service.route("POST", &format!("/v1/runs/{id}/submissions"), &token, json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
         assert!(root.path().join("submissions").exists());
-        assert_eq!(service.route("POST", "/v1/admin/wipe", &token, json!({"confirm":"wipe everything"})).unwrap_err().0, 401);
-        assert!(service.route("POST", "/v1/admin/wipe", &admin, json!({})).unwrap_err().1.contains("wipe everything"));
-        let report = service.route("POST", "/v1/admin/wipe", &admin, json!({"confirm":"wipe everything"})).unwrap();
+        assert_eq!(service.route("POST", "/v1/admin/wipe", &token, Value::Null).unwrap_err().0, 401);
+        let report = service.route("POST", "/v1/admin/wipe", &admin, Value::Null).unwrap();
         assert_eq!((report["deleted"]["submissions"].as_u64(), report["deleted"]["runs"].as_u64(), report["deleted"]["campaigns"].as_u64()), (Some(1), Some(1), Some(2)));
         assert_eq!(report["errors"], json!([]));
         assert!(!root.path().join("submissions").exists());
@@ -696,10 +695,7 @@ impl Service {
         service.recover()?;
         Ok(service)
     }
-    pub(crate) fn wipe(&self, body: &Value) -> Result<Value> {
-        if body["confirm"] != "wipe everything" {
-            return Err("Send {\"confirm\":\"wipe everything\"}; this permanently deletes every batch, campaign, run, submission, judgment, report, game and event with no backup".into());
-        }
+    pub(crate) fn wipe(&self) -> Result<Value> {
         let _batches = self.batch_lock.lock().unwrap();
         let mut workflows = self.workflows.lock().unwrap();
         let mut errors = Vec::new();
@@ -1319,7 +1315,7 @@ impl Service {
             }
             ("POST", ["v1", "admin", "wipe"]) => {
                 self.admin(token)?;
-                Ok(self.wipe(&body)?)
+                Ok(self.wipe()?)
             }
             ("POST", ["v1", "benchmark-batches", id, "stop"]) => {
                 self.admin(token)?;
