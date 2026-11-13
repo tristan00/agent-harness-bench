@@ -1,0 +1,19 @@
+{
+  "dataset": "optical_digits",
+  "metric": "accuracy",
+  "reference_score": 0.9677239844184753,
+  "trivial_score": 0.10127991096271564,
+  "model": "StandardScaler + SVC (RBF kernel, C=1.0, gamma='scale'), scikit-learn defaults",
+  "train_rows": 3823,
+  "test_rows": 1797,
+  "train_sha256": "e1b683cc211604fe8fd8c4417e6a69f31380e0c61d4af22e93cc21e9257ffedd",
+  "test_sha256": "6ebb3d2fee246a4e99363262ddf8a00a3c41bee6014c373ed9d9216ba7f651b8",
+  "runtime_seconds": 0.189,
+  "packages": {
+    "python": "3.14.4",
+    "numpy": "2.5.4",
+    "pandas": "3.1.1",
+    "scikit-learn": "1.9.1",
+    "scipy": "1.18.1"
+  }
+}

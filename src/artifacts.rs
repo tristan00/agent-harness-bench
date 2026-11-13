@@ -78,7 +78,13 @@ pub fn save(root: &Path, mut input: Submission) -> Result<Artifact> {
     if input.files.is_empty() || input.files.len() > 1024 {
         return Err("submit 1..1024 files".into());
     }
-    for cmd in std::iter::once(&input.manifest.run).chain(input.manifest.build.iter()) {
+    if input.manifest.run.is_empty() && input.manifest.predict.is_none() {
+        return Err("manifest requires run or predict".into());
+    }
+    if input.manifest.predict.as_ref().is_some_and(|argv| !argv.iter().any(|a| a.contains("{input}")) || !argv.iter().any(|a| a.contains("{output}"))) {
+        return Err("predict must contain {input} and {output}".into());
+    }
+    for cmd in [&input.manifest.run].into_iter().filter(|cmd| !cmd.is_empty()).chain(input.manifest.build.iter()).chain(input.manifest.predict.iter()) {
         if cmd.is_empty()
             || cmd.len() > 128
             || cmd
@@ -235,6 +241,7 @@ mod tests {
             manifest: Manifest {
                 run: vec!["python".into(), "x.py".into()],
                 build: None,
+                predict: None,
                 env: Default::default(),
                 source_files: vec![],
                 ui: None,

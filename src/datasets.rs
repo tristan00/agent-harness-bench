@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "2026-11-12.v1";
+pub const VERSION: &str = "2026-11-13.v2";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Dataset {

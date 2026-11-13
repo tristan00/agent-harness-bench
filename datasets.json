@@ -39,5 +39,54 @@
       "https://raw.githubusercontent.com/jpatokal/openflights/master/data/routes.dat"
     ],
     "instructions": "Download both comma-delimited DAT files. They have no header rows. Record checksums because master can change. Column definitions: https://openflights.org/data.php"
+  },
+  {
+    "id": "wri_global_power_plants",
+    "name": "WRI Global Power Plant Database",
+    "urls": [
+      "https://raw.githubusercontent.com/wri/global-power-plant-database/master/output_database/global_power_plant_database.csv"
+    ],
+    "instructions": "Download the CSV of about 35,000 power plants with location, capacity, fuel and generation estimates. Record the checksum because master can change. Documentation: https://datasets.wri.org/dataset/globalpowerplantdatabase"
+  },
+  {
+    "id": "rebrickable_lego",
+    "name": "Rebrickable LEGO sets and themes",
+    "urls": [
+      "https://cdn.rebrickable.com/media/downloads/sets.csv.gz",
+      "https://cdn.rebrickable.com/media/downloads/themes.csv.gz"
+    ],
+    "instructions": "Download and decompress both gzipped CSVs; sets reference themes by theme_id and themes nest through parent_id. Record checksums because the files are refreshed regularly. Documentation: https://rebrickable.com/downloads/"
+  },
+  {
+    "id": "fivethirtyeight_nba_elo",
+    "name": "FiveThirtyEight NBA Elo history",
+    "urls": [
+      "https://raw.githubusercontent.com/fivethirtyeight/data/master/nba-elo/nbaallelo.csv"
+    ],
+    "instructions": "Download the CSV of every NBA and ABA game with pre- and post-game Elo ratings; each game appears once per team. Documentation: https://github.com/fivethirtyeight/data/tree/master/nba-elo"
+  },
+  {
+    "id": "noaa_central_park_daily",
+    "name": "NOAA daily weather, New York Central Park",
+    "urls": [
+      "https://www.ncei.noaa.gov/data/global-historical-climatology-network-daily/access/USW00094728.csv"
+    ],
+    "instructions": "Download the GHCN-Daily station CSV for Central Park since 1869. Values use GHCN units and flags. Record the checksum because the file grows daily. Documentation: https://www.ncei.noaa.gov/products/land-based-station/global-historical-climatology-network-daily"
+  },
+  {
+    "id": "census_county_population_2023",
+    "name": "US Census county population estimates 2020-2023",
+    "urls": [
+      "https://www2.census.gov/programs-surveys/popest/datasets/2020-2023/counties/totals/co-est2023-alldata.csv"
+    ],
+    "instructions": "Download the CSV of county and state population estimates with births, deaths and migration components. Rows with COUNTY 000 are state totals. Documentation: https://www2.census.gov/programs-surveys/popest/technical-documentation/file-layouts/2020-2023/CO-EST2023-ALLDATA.pdf"
+  },
+  {
+    "id": "usgs_earthquakes_2023_m45",
+    "name": "USGS earthquakes of magnitude 4.5 and above, 2023",
+    "urls": [
+      "https://earthquake.usgs.gov/fdsnws/event/1/query.csv?starttime=2023-01-01&endtime=2024-01-01&minmagnitude=4.5&orderby=time-asc"
+    ],
+    "instructions": "Download the CSV of every magnitude 4.5+ earthquake in 2023 from the USGS event service; this bounded query is a single response. Documentation: https://earthquake.usgs.gov/data/comcat/data-eventterms.php"
   }
 ]

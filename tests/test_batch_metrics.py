@@ -65,7 +65,7 @@ class MetricsTests(unittest.TestCase):
         missing = score(metrics, None, CONFIG, "measured_tokens")
         self.assertEqual(missing["categories"]["simplicity"],0)
         self.assertEqual(missing["categories"]["result"],0)
-        cases = [{**first,"benchmark":name,"score":value} for name,value in zip(CONFIG["benchmark_weights"],[20,40,60,80])]
+        cases = [{**first,"benchmark":name,"score":value} for name,value in zip(CONFIG["benchmark_weights"],[10,30,50,70,90])]
         self.assertEqual(aggregate(cases,CONFIG)[0]["score"],50)
 
     def maze_metrics(self, lines=3000, tokens=600000):
@@ -97,14 +97,14 @@ class MetricsTests(unittest.TestCase):
         self.assertIsNone(other["per_request_normalization"])
         self.assertEqual(other["categories"]["simplicity"], 25)
 
-    def test_scoring_weights_all_four_benchmarks(self):
+    def test_scoring_weights_all_five_benchmarks(self):
         from score_batch import validate_config
         validate_config(CONFIG)
         broken = copy.deepcopy(CONFIG); del broken["maze"]
         with self.assertRaises(KeyError):
             validate_config(broken)
         first = score(self.maze_metrics(), self.report(6, 5), CONFIG, "measured_tokens")
-        cases = [{**first, "benchmark":name, "score":value} for name, value in zip(CONFIG["benchmark_weights"], [20, 40, 60, 80])]
+        cases = [{**first, "benchmark":name, "score":value} for name, value in zip(CONFIG["benchmark_weights"], [10, 30, 50, 70, 90])]
         self.assertEqual(aggregate(cases, CONFIG)[0]["score"], 50)
 
     def test_report_contributions_reconstruct_scores_without_hidden_weights(self):

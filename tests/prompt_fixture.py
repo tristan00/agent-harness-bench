@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 
 def selected_documents(path, settings=None):
@@ -10,4 +11,6 @@ def selected_documents(path, settings=None):
         content = f"Selected {role} fixture for {path.name}.".encode()
         (path / filename).write_bytes(content)
         settings["prompts"][role] = {"candidate":"fixture.md", "sha256":hashlib.sha256(content).hexdigest()}
+    settings["limits"] = settings.get("limits") or {"criteria": 3}
+    (path / "LIMITS.json").write_text(json.dumps(settings["limits"]), encoding="utf-8")
     return settings

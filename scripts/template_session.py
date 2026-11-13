@@ -41,8 +41,8 @@ def main():
     settings = workspace_settings(profile["workspace"])
     command = planner_command(profile["planner_command"], settings["planner"])
     workspace = Path(profile["workspace_path"])
-    if {path.name for path in workspace.iterdir()} != {"PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"}:
-        raise ValueError("planner workspace must contain only its selected instruction documents")
+    if {path.name for path in workspace.iterdir()} != {"PROJECT_PLANNER.md", "WORKER_PROTOCOL.md", "LIMITS.json"}:
+        raise ValueError("planner workspace must contain only its instruction documents and LIMITS.json")
     documents(workspace, settings)
     prompt_file = root / "planner-prompt.txt"
     prompt_file.write_bytes(profile["template_prompt"].encode("utf-8"))

@@ -65,7 +65,7 @@ mod tests {
         assert_eq!(detect(env(&[("AGENT_FAMILY", "claude"), ("CODEX_THREAD_ID", "t")])), Some("claude"));
         assert_eq!(detect(env(&[])), None);
         assert!(allowed("sol_6_1_light", Some("codex")) && !allowed("sol_6_1_light", Some("claude")));
-        assert!(allowed("claude_haiku_5_5_low", Some("claude")) && !allowed("claude_haiku_5_5_low", Some("codex")));
+        assert!(allowed("claude_sonnet_5_5_low", Some("claude")) && !allowed("claude_sonnet_5_5_low", Some("codex")) && !allowed("claude_haiku_5_5_low", Some("claude")));
         assert!(!allowed("sol_6_1_light", None) && !allowed("luna_6_high", Some("codex")));
         assert!(!allowed("sol_light", Some("codex")) && !allowed("missing", Some("codex")));
     }

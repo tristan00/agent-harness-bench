@@ -18,6 +18,7 @@ fn manifest(script: &str) -> Manifest {
             script.into(),
         ],
         build: None,
+        predict: None,
         env: Default::default(),
         source_files: vec![],
         ui: None,

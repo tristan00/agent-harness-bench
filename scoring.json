@@ -1,5 +1,5 @@
 {
-  "version": "workspace-scores.v4",
+  "version": "workspace-scores.v5",
   "category_weights": {
     "result": 1,
     "simplicity": 1,
@@ -9,7 +9,8 @@
     "chess960": 1,
     "game_build": 1,
     "dataset_dashboard": 1,
-    "maze_game": 1
+    "maze_game": 1,
+    "ml_predictor": 1
   },
   "framework_weights": {
     "task_count": 1,
@@ -44,5 +45,9 @@
   "maze": {
     "completion_weight": 1,
     "quality_weight": 1
+  },
+  "ml": {
+    "eda_weight": 1,
+    "model_weight": 1
   }
 }

@@ -8,6 +8,7 @@ pub enum Benchmark {
     GameBuild,
     DatasetDashboard,
     MazeGame,
+    MlPredictor,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +28,9 @@ pub struct Config {
     pub baselines: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub follow_ups: Vec<String>,
+    pub predict_seconds: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub ml_python: String,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -44,6 +48,8 @@ impl Default for Config {
             parallel_games: 8,
             baselines: true,
             follow_ups: vec![],
+            predict_seconds: 60,
+            ml_python: String::new(),
         }
     }
 }
@@ -57,13 +63,16 @@ impl Config {
         }
         let development = match benchmark {
             Benchmark::Chess960 => 600,
-            Benchmark::DatasetDashboard => 900,
+            Benchmark::DatasetDashboard | Benchmark::MlPredictor => 900,
             Benchmark::GameBuild | Benchmark::MazeGame => 1800,
         };
         value["benchmark"] = serde_json::json!(benchmark);
         value.as_object_mut().unwrap().entry("development_seconds").or_insert(development.into());
         if benchmark == Benchmark::MazeGame {
             value.as_object_mut().unwrap().entry("judge_seconds").or_insert(600.into());
+        }
+        if benchmark == Benchmark::MlPredictor {
+            value.as_object_mut().unwrap().entry("judge_seconds").or_insert(180.into());
         }
         let config: Self = serde_json::from_value(value)?;
         config.validate()?;
@@ -81,10 +90,14 @@ impl Config {
             ("judge_seconds", self.judge_seconds, 3600),
             ("score_seconds", self.score_seconds, 3600),
             ("build_seconds", self.build_seconds, 1800),
+            ("predict_seconds", self.predict_seconds, 600),
         ] {
             if n == 0 || n > max {
                 return Err(format!("{name} must be in 1..={max}").into());
             }
+        }
+        if (self.benchmark == Benchmark::MlPredictor) == self.ml_python.trim().is_empty() {
+            return Err("ml_predictor campaigns require ml_python; other benchmarks take none".into());
         }
         if !(1..=64).contains(&self.parallel_games) {
             return Err("parallel_games must be in 1..=64".into());
@@ -116,6 +129,8 @@ pub struct Run {
     pub inspiration: Option<crate::prompts::Inspiration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset: Option<crate::datasets::Assignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml: Option<crate::ml::Assignment>,
     pub id: String,
     pub campaign_id: String,
     pub agent: String,
@@ -133,6 +148,7 @@ impl Run {
         Self {
             inspiration,
             dataset,
+            ml: None,
             id: crate::id(),
             campaign_id: campaign.id.clone(),
             agent: agent.into(),
@@ -149,7 +165,10 @@ impl Run {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    #[serde(default)]
     pub run: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict: Option<Vec<String>>,
     #[serde(default)]
     pub build: Option<Vec<String>>,
     #[serde(default)]
@@ -321,6 +340,28 @@ impl DashboardScore {
         }
         if !self.measurements.is_object() || self.notes.len() > 20000 {
             return Err("dashboard measurements must be an object with bounded notes".into());
+        }
+        Ok(())
+    }
+    pub fn total(&self) -> u16 { self.criteria().iter().map(|c| u16::from(c.score)).sum() }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EdaScore {
+    pub thoroughness: Criterion,
+    pub prose_economy: Criterion,
+    pub presentation: Criterion,
+    pub information_architecture: Criterion,
+    pub notes: String,
+}
+impl EdaScore {
+    pub fn criteria(&self) -> [&Criterion; 4] {
+        [&self.thoroughness, &self.prose_economy, &self.presentation, &self.information_architecture]
+    }
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.criteria().iter().any(|c| c.score > 5 || c.evidence.trim().is_empty() || c.evidence.len() > 10000) || self.notes.len() > 20000 {
+            return Err("each EDA criterion requires 0..5 and evidence, with bounded notes".into());
         }
         Ok(())
     }

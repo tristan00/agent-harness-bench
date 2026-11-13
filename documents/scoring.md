@@ -22,15 +22,17 @@ An unfinished batch or concurrent scoring request returns HTTP 409. Authenticati
 
 The report is JSON only. It includes raw task and dependency evidence, per-file source line counts, execution intervals, token coverage, judge criteria and evidence, chess Elo metrics, formulas, intermediate values, and every weighted aggregation. Each weighted mean lists raw weights, normalized weights, weighted values, contributions, numerator, denominator, and result. `cases[].calculation` explains benchmark scores; `ranking[].calculation` explains workspace scores. `token_mode_decision` lists exactly which incomplete cases forced the common runtime fallback.
 
-Scoring uses `scoring.json` (version `workspace-scores.v4`). Its five equally weighted framework components are task count, relationships, parallelism, token efficiency, and classification. Classification is `100 * attribute_fill_share * classified_dependency_share`. `attribute_fill_share` is filled attribute slots divided by `task_count * len(classification_attributes)`, where `scoring.json` lists `languages`, `functions` and `priority`. An attribute is unfilled when it is null or empty. The coordinator saves `lane`, `size`, `artifact` and `deploy` with defaults, and `needs` and `model` have meaningful empty values, so saved tasks cannot show whether a planner set them and they are not counted. Dependency reasons that are missing or `unclassified` reduce dependency coverage. Only in-scope dependency edges count, matching the relationship graph. Containers count as tasks. No dependencies means no dependency penalty; no tasks earns zero. The report lists filled counts and missing task IDs per attribute and all unclassified edges. Attributes are read from saved tasks, never inferred from text or filled in by the scorer.
+Scoring uses `scoring.json` (version `workspace-scores.v5`). Its five equally weighted framework components are task count, relationships, parallelism, token efficiency, and classification. Classification is `100 * attribute_fill_share * classified_dependency_share`. `attribute_fill_share` is filled attribute slots divided by `task_count * len(classification_attributes)`, where `scoring.json` lists `languages`, `functions` and `priority`. An attribute is unfilled when it is null or empty. The coordinator saves `lane`, `size`, `artifact` and `deploy` with defaults, and `needs` and `model` have meaningful empty values, so saved tasks cannot show whether a planner set them and they are not counted. Dependency reasons that are missing or `unclassified` reduce dependency coverage. Only in-scope dependency edges count, matching the relationship graph. Containers count as tasks. No dependencies means no dependency penalty; no tasks earns zero. The report lists filled counts and missing task IDs per attribute and all unclassified edges. Attributes are read from saved tasks, never inferred from text or filled in by the scorer.
 
 Result averages maze request completion and quality; maze source lines and token cost are divided by `max(sum(request completion fractions), 1)`. Earlier scoring versions are no longer supported; reports already saved under their version directories are unchanged.
+
+For `ml_predictor`, result is the mean of the EDA judge's rating (`20 × mean criterion rating`) and the model score. The model score is `0` at or below the trivial baseline, `50 × (score − trivial) / (reference − trivial)` up to the reference, and `50 + 50 × (score − reference) / (1 − reference)` above it, capped at 100. A missing, failing, slow or malformed prediction scores 0. `ml-evaluations.json` in the output directory records every evaluation and is reused on reruns.
 
 Independent reviewers use the configured model and effort in fresh sessions with isolated headless browsers. They inspect frozen submissions; they cannot repair them. Arithmetic and aggregations are deterministic code. Reviewer judgment remains subjective and its individual ratings and evidence are preserved in `quality_report`.
 
 ## Formulas
 
-All category scores are on a 0–100 scale. Each benchmark is the mean of **result, simplicity and framework efficiency**. A workspace is the mean of its **four benchmark scores**. Framework efficiency is the mean of **task count, relations, parallelism, token efficiency and classification**. These equal weights are configured in `scoring.json`.
+All category scores are on a 0–100 scale. Each benchmark is the mean of **result, simplicity and framework efficiency**. A workspace is the mean of its **five benchmark scores**. Framework efficiency is the mean of **task count, relations, parallelism, token efficiency and classification**. These equal weights are configured in `scoring.json`.
 
 Normalization anchors are initial implementation choices, recorded in that versioned configuration. They are fixed across batches, rather than rescaled against whichever competitors happen to appear. Raw metrics remain available for analysis and future formula changes.
 
@@ -54,7 +56,7 @@ When every worker launch and planner has a complete usage record, `cost` is tota
 
 ## Outputs and repeatability
 
-Results are saved in `DATA/batch-scores/BATCH_ID/workspace-scores.v4/`:
+Results are saved in `DATA/batch-scores/BATCH_ID/workspace-scores.v5/`:
 
 - `scores.json`: all scores, raw metrics, historical workspace settings, datasets and native quality reports.
 - `metrics.json`, `batch.json`, `config.json`: captured inputs, case identities and formulas. Reruns reuse the captured metrics and reject changed settings or selected attempts in the same output directory.

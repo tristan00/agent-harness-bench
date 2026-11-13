@@ -58,6 +58,13 @@ pub fn public(batch: &Value) -> Value {
     value
 }
 
+const BENCHMARKS: [&str; 5] = ["chess960", "game_build", "dataset_dashboard", "maze_game", "ml_predictor"];
+
+fn ml_python(root: &Path) -> PathBuf {
+    let venv = root.parent().unwrap_or(root).join("ml-python");
+    if cfg!(windows) { venv.join("Scripts").join("python.exe") } else { venv.join("bin").join("python") }
+}
+
 fn assigned<T: serde::de::DeserializeOwned>(case: &Value, field: &str) -> Result<Option<T>> {
     Ok(case.get(field).map(|value| serde_json::from_value(value.clone())).transpose()?)
 }
@@ -67,6 +74,9 @@ fn plain(path: &Path) -> String {
         .trim_start_matches(r"\\?\")
         .to_owned()
 }
+
+const LIMITS_FILE: &str = "LIMITS.json";
+pub(crate) const WORKSPACE_FILES: [&str; 3] = ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md", LIMITS_FILE];
 
 fn workspace_documents(path: &Path, settings: &Value) -> Result<Vec<(&'static str, String)>> {
     let mut documents = Vec::new();
@@ -85,6 +95,11 @@ fn workspace_documents(path: &Path, settings: &Value) -> Result<Vec<(&'static st
         }
         documents.push((filename, text));
     }
+    let limits: Value = serde_json::from_slice(&fs::read(path.join(LIMITS_FILE)).map_err(|_| "Workspace LIMITS.json is required")?)?;
+    if limits != settings["limits"] {
+        return Err("Workspace LIMITS.json differs from its settings".into());
+    }
+    documents.push((LIMITS_FILE, serde_json::to_string_pretty(&limits)?));
     Ok(documents)
 }
 
@@ -128,8 +143,8 @@ impl Service {
                 return Err("each workspace must be a directory below workspace_root with object settings".into());
             }
             workspace_documents(&path, &workspace.settings)?;
-            if fs::read_dir(&path)?.any(|entry| entry.is_err() || !["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"].iter().any(|name| entry.as_ref().unwrap().file_name() == *name)) {
-                return Err("fresh workspaces may contain only their selected planner and worker documents".into());
+            if fs::read_dir(&path)?.any(|entry| entry.is_err() || !WORKSPACE_FILES.iter().any(|name| entry.as_ref().unwrap().file_name() == *name)) {
+                return Err("fresh workspaces may contain only their planner and worker documents and LIMITS.json".into());
             }
             if roots
                 .iter()
@@ -151,7 +166,7 @@ impl Service {
             }
         }
         let id = crate::id();
-        if request.benchmarks.as_ref().is_some_and(|names| names.is_empty() || names.iter().any(|n| !["chess960", "game_build", "dataset_dashboard", "maze_game"].contains(&n.as_str()))) {
+        if request.benchmarks.as_ref().is_some_and(|names| names.is_empty() || names.iter().any(|n| !BENCHMARKS.contains(&n.as_str()))) {
             return Err("benchmarks must list supported tasks".into());
         }
         let mut campaigns = BTreeMap::new();
@@ -159,20 +174,28 @@ impl Service {
         if request
             .task_configs
             .keys()
-            .any(|k| !["chess960", "game_build", "dataset_dashboard", "maze_game"].contains(&k.as_str()))
+            .any(|k| !BENCHMARKS.contains(&k.as_str()))
         {
-            return Err("supported tasks are chess960, game_build, dataset_dashboard and maze_game".into());
+            return Err(format!("supported tasks are {}", BENCHMARKS.join(", ")).into());
         }
         for (name, benchmark) in [
             ("chess960", Benchmark::Chess960),
             ("game_build", Benchmark::GameBuild),
             ("dataset_dashboard", Benchmark::DatasetDashboard),
             ("maze_game", Benchmark::MazeGame),
+            ("ml_predictor", Benchmark::MlPredictor),
         ] {
             if request.benchmarks.as_ref().is_some_and(|names| !names.iter().any(|n| n == name)) {
                 continue;
             }
-            let config = Config::new(benchmark, request.task_configs.get(name).cloned().unwrap_or(json!({})))?;
+            let mut value = request.task_configs.get(name).cloned().unwrap_or(json!({}));
+            if benchmark == Benchmark::MlPredictor && value.get("ml_python").is_none() && value.is_object() {
+                value["ml_python"] = json!(plain(&ml_python(&self.root)));
+            }
+            let config = Config::new(benchmark, value)?;
+            if benchmark == Benchmark::MlPredictor && !Path::new(&config.ml_python).is_file() {
+                return Err(format!("ml_python {} does not exist", config.ml_python).into());
+            }
             let campaign = Campaign { id: crate::id(), config, created_at_ms: now_ms(), status: "enrolling".into() };
             campaigns.insert(name, campaign.id.clone());
             for (index, path) in roots.iter().enumerate() {
@@ -191,7 +214,10 @@ impl Service {
                 if benchmark == Benchmark::DatasetDashboard {
                     case["dataset"] = json!(crate::datasets::random_assignment());
                 }
-                if benchmark == Benchmark::GameBuild {
+                if benchmark == Benchmark::MlPredictor {
+                    case["ml"] = json!(crate::ml::random_assignment());
+                }
+                if matches!(benchmark, Benchmark::GameBuild | Benchmark::MazeGame) {
                     case["inspiration"] = json!(prompts::random_inspiration());
                 }
                 cases.push(case);
@@ -324,7 +350,8 @@ impl Service {
         let mut workflows = self.workflows.lock().unwrap();
         let db = self.db();
         let campaign = db.campaign(case["campaign_id"].as_str().ok_or("missing campaign")?)?;
-        let run = Run::new(&campaign, case["workspace"].as_str().unwrap(), assigned(case, "inspiration")?, assigned(case, "dataset")?);
+        let mut run = Run::new(&campaign, case["workspace"].as_str().unwrap(), assigned(case, "inspiration")?, assigned(case, "dataset")?);
+        run.ml = assigned(case, "ml")?;
         let now = run.started_at_ms;
         let token = crate::id();
         let mut record =
@@ -448,7 +475,8 @@ mod tests {
         for index in 0..16 {
             let path = workspaces.join(index.to_string());
             fs::create_dir(&path).unwrap();
-            let mut settings = json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","prompts":{}});
+            let mut settings = json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","prompts":{},"limits":{"criteria":3}});
+            fs::write(path.join(LIMITS_FILE), r#"{"criteria":3}"#).unwrap();
             for (role, filename) in [("project_planner","PROJECT_PLANNER.md"),("worker_protocol","WORKER_PROTOCOL.md")] {
                 fs::write(path.join(filename), "Selected fixture instructions.").unwrap();
                 settings["prompts"][role] = json!({"candidate":"fixture.md","sha256":format!("{:x}",Sha256::digest(b"Selected fixture instructions."))});
@@ -458,10 +486,13 @@ mod tests {
         let template = root.path().join("template.txt");
         fs::write(&template, format!("Task {{benchmark_task}} Workspace: {}",workspaces.join("{workspace_name}").display())).unwrap();
         let batch = service.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
-            "workspaces":selected,"order_seed":960,"task_configs":{"maze_game":{"follow_ups":["Second request."]}}})).unwrap();
+            "workspaces":selected,"order_seed":960,"task_configs":{"maze_game":{"follow_ups":["Second request."]},"ml_predictor":{"ml_python":std::env::current_exe().unwrap()}}})).unwrap();
         assert_eq!(batch["max_parallel"],8);
         assert_eq!(batch["order_seed"],960);
-        assert_eq!(batch["cases"].as_array().unwrap().len(),64);
+        assert_eq!(batch["cases"].as_array().unwrap().len(),80);
+        let ml: Vec<_> = batch["cases"].as_array().unwrap().iter().filter(|case| case["benchmark"] == "ml_predictor").collect();
+        assert_eq!(ml.len(), 16);
+        assert!(ml.iter().all(|case| case["ml"]["task"]["train"].as_array().is_some_and(|urls| !urls.is_empty())));
         assert!(batch["cases"].as_array().unwrap().iter().all(|case| case["status"] == "queued"));
         for (benchmark, field) in [("game_build", "inspiration"), ("dataset_dashboard", "dataset")] {
             let assigned: Vec<_> = batch["cases"].as_array().unwrap().iter().filter(|case| case["benchmark"] == benchmark).collect();
@@ -478,6 +509,7 @@ mod tests {
         fs::create_dir(&only).unwrap();
         let mut single = selected[0].clone();
         for filename in ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"] { fs::write(only.join(filename), "Selected fixture instructions.").unwrap(); }
+        fs::write(only.join(LIMITS_FILE), r#"{"criteria":3}"#).unwrap();
         single["path"] = json!(only);
         let maze = reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
             "workspaces":[single],"benchmarks":["maze_game"],"task_configs":{"maze_game":{"follow_ups_file":follow_ups}}})).unwrap();
@@ -488,6 +520,7 @@ mod tests {
         let missing = workspaces.join("maze-missing");
         fs::create_dir(&missing).unwrap();
         for filename in ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"] { fs::write(missing.join(filename), "Selected fixture instructions.").unwrap(); }
+        fs::write(missing.join(LIMITS_FILE), r#"{"criteria":3}"#).unwrap();
         let mut unconfigured = selected[0].clone();
         unconfigured["path"] = json!(missing);
         assert!(reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,

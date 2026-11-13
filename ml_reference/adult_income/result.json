@@ -1,0 +1,19 @@
+{
+  "dataset": "adult_income",
+  "metric": "roc_auc",
+  "reference_score": 0.927198,
+  "trivial_score": 0.5,
+  "model": "sklearn HistGradientBoostingClassifier (default hyperparameters, native categorical handling via ordinal encoding, all 14 raw features, random_state=0)",
+  "train_rows": 32561,
+  "test_rows": 16281,
+  "train_sha256": "5b00264637dbfec36bdeaab5676b0b309ff9eb788d63554ca0a249491c86603d",
+  "test_sha256": "a2a9044bc167a35b2361efbabec64e89d69ce82d9790d2980119aac5fd7e9c05",
+  "runtime_seconds": 0.424,
+  "packages": {
+    "python": "3.14.4",
+    "numpy": "2.5.4",
+    "pandas": "3.1.1",
+    "scikit-learn": "1.9.1",
+    "scipy": "1.18.1"
+  }
+}

@@ -39,7 +39,11 @@ def main():
                   "summary": "Fixture ready", "criteria": ["passed"], "findings": []}
         Path(os.environ["COORDINATOR_RESULT"]).write_text(json.dumps(result))
         return
-    assert {path.name for path in Path.cwd().iterdir()} == {"PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"}, "planner did not start with only selected documents"
+    assert {path.name for path in Path.cwd().iterdir()} == {"PROJECT_PLANNER.md", "WORKER_PROTOCOL.md", "LIMITS.json"}, "planner did not start with only selected documents"
+    coordinator = Client(os.environ["COORDINATOR_URL"])
+    schema = coordinator.request("GET", f"/api/task-schema?workspace={Path.cwd()}")
+    limits = json.loads((Path.cwd() / "LIMITS.json").read_text())
+    assert "research" in schema["lanes"] and all(schema["limits"][key] == value for key, value in limits.items())
     assert not any(key in os.environ for key in ["HARNESS_API_TOKEN", "HARNESS_WORKFLOW_REQUEST", "HARNESS_JUDGE_TOKEN"])
     prompt = Path(os.environ["HARNESS_PLANNER_PROMPT"]).read_text(encoding="utf-8")
     assert str(Path.cwd()) in prompt

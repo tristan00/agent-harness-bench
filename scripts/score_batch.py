@@ -13,6 +13,7 @@ import time
 from agent_selection import claude_arguments, claude_environment, command_arguments, model_effort, resolve, detect_family
 from batch_metrics import TRACKED_ATTRIBUTES, aggregate, collect, read, score
 from harness import ApiError, Client, agent_environment, spawn_agent, stop_agent, write_json
+from ml_eval import evaluate as evaluate_model
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,10 +46,11 @@ def output_lock(path):
 
 def validate_config(config):
     groups = {"category_weights": {"result", "simplicity", "framework"},
-              "benchmark_weights": {"chess960", "game_build", "dataset_dashboard", "maze_game"},
+              "benchmark_weights": {"chess960", "game_build", "dataset_dashboard", "maze_game", "ml_predictor"},
               "framework_weights": {"task_count", "relations", "parallelism", "token_efficiency", "classification"},
               "references": {"elo_scale", "source_lines", "task_count", "relation_types", "edges_per_task", "tokens"},
-              "maze": {"completion_weight", "quality_weight"}}
+              "maze": {"completion_weight", "quality_weight"},
+              "ml": {"eda_weight", "model_weight"}}
     for name, keys in groups.items():
         values = config[name]
         if set(values) != keys or any(not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0 for value in values.values()):
@@ -119,6 +121,12 @@ def review_case(args, case, client, output, config):
     write_json(directory / "submission.json", artifact)
     prompt_path = directory / "prompt.txt"
     details = (
+        f"\nReview only this submission's EDA report. Its files are in {directory / 'submission.json'}; extract any figures you need into your current directory. "
+        "Do not run, rebuild or repair the submission, and do not inspect other workspaces or solutions. "
+        f"GET /v1/judgments/{job['id']} on {args.url} (token in HARNESS_JUDGMENT_TOKEN) reports when scoring opens. "
+        f"Write your score object to {score_path}; the runner submits it when scoring opens. You may finish after writing score.json. "
+        "Give concrete evidence for every criterion. The runner records your session and will not invent missing ratings.\n"
+    ) if case["benchmark"] == "ml_predictor" else (
         f"\nReview only this submission. Benchmark: {case['benchmark']}. UI: {job['ui_url']}. "
         f"Launch error: {job['launch_error']}. Use the Playwright MCP tools for an isolated browser. "
         "Capture actual screenshots and exercise the UI before rating it. Save screenshots in your current directory. "
@@ -246,6 +254,16 @@ def score_batch(args, output, config):
     if errors:
         write_json(output / "errors.json", errors)
         raise RuntimeError(f"Incomplete judge results: {output / 'errors.json'}")
+    evaluations = read(output / "ml-evaluations.json") if (output / "ml-evaluations.json").exists() else {}
+    for case in batch["cases"]:
+        if case["benchmark"] != "ml_predictor" or not reviewed.get(case["run_id"]):
+            continue
+        if case["run_id"] not in evaluations:
+            run = client.request("GET", f'/v1/runs/{case["run_id"]}')["run"]
+            campaign = client.request("GET", f'/v1/campaigns/{case["campaign_id"]}')["campaign"]
+            evaluations[case["run_id"]] = evaluate_model(run, campaign["config"], args.data, output)
+            write_json(output / "ml-evaluations.json", evaluations)
+        reviewed[case["run_id"]] = {**reviewed[case["run_id"]], "model_evaluation": evaluations[case["run_id"]]}
     until = time.monotonic() + args.timeout
     chess = [case for case in batch["cases"] if case["benchmark"] == "chess960" and case["run_id"]]
     while time.monotonic() < until:
@@ -259,7 +277,7 @@ def score_batch(args, output, config):
     mode = "measured_tokens" if all(item["tokens"]["complete"] for item in metrics) else config["incomplete_token_fallback"]
     scored = [score(item, reviewed.get(item["run_id"]), config, mode) for item in metrics]
     implementation = {name:hashlib.sha256((ROOT / "scripts" / name).read_bytes()).hexdigest()
-                      for name in ["score_batch.py", "batch_metrics.py", "agent_selection.py"]}
+                      for name in ["score_batch.py", "batch_metrics.py", "agent_selection.py", "ml_eval.py"]}
     unscored = []
     for case in deferred:
         run = client.request("GET", f'/v1/runs/{case["run_id"]}') if case.get("run_id") else {}

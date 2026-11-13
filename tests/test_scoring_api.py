@@ -52,7 +52,7 @@ class ScoringApi(unittest.TestCase):
                             self.fail((root / "service.log").read_text())
                         time.sleep(.05)
                 token = (root / "admin-token").read_text().strip()
-                names = ["chess960", "game_build", "dataset_dashboard", "maze_game"]
+                names = ["chess960", "game_build", "dataset_dashboard", "maze_game", "ml_predictor"]
                 batch = {"id":"fixture", "status":"completed", "profile":"fixture",
                          "profile_config":{"coordinator_url":f"http://127.0.0.1:{coordinator.server_port}"},
                          "campaigns":{name:name for name in names},
@@ -90,11 +90,11 @@ class ScoringApi(unittest.TestCase):
                 invalid.exception.close()
                 report = request()
                 self.assertEqual(report["schema_version"], "benchmark-score-report.v2")
-                self.assertEqual(len(report["cases"]), 4)
-                self.assertEqual(len(report["ranking"][0]["calculation"]["terms"]), 4)
+                self.assertEqual(len(report["cases"]), 5)
+                self.assertEqual(len(report["ranking"][0]["calculation"]["terms"]), 5)
                 self.assertTrue(all(case["score"] == 0 and case["status"] == "no_submission" for case in report["cases"]))
                 self.assertEqual(report["ranking"], request()["ranking"])
-                saved = root / "batch-scores/fixture/workspace-scores.v4/scores.json"
+                saved = root / "batch-scores/fixture/workspace-scores.v5/scores.json"
                 self.assertEqual(json.loads(saved.read_text())["ranking"], report["ranking"])
                 self.assertFalse(list(root.rglob("*.html")))
             finally:

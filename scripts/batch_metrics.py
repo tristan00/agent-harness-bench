@@ -269,6 +269,11 @@ def score(metrics, report, config, token_mode):
         if metrics["benchmark"] == "chess960":
             delta = report["metrics"]["elo_change"]
             result = 100 / (1 + 10 ** (-delta / refs["elo_scale"]))
+        elif metrics["benchmark"] == "ml_predictor":
+            weights = config["ml"]
+            evaluation = report.get("model_evaluation") or {"normalized": 0.0}
+            eda = 20 * report["mean_out_of_5"]
+            result = (weights["eda_weight"] * eda + weights["model_weight"] * evaluation["normalized"]) / (weights["eda_weight"] + weights["model_weight"])
         elif maze:
             weights = config["maze"]
             completion = completed / report["progress"]["requests_total"]
@@ -291,7 +296,12 @@ def score(metrics, report, config, token_mode):
         quality_trace = calculation("mean_out_of_5 * 20", {"mean_out_of_5": report["mean_out_of_5"]}, report["mean_out_of_5"] * 20,
                                     source="independent_judge", criteria=criteria,
                                     mean=aggregation(ratings, dict.fromkeys(ratings, 1)) if ratings else None)
-        if maze:
+        if metrics["benchmark"] == "ml_predictor":
+            result_trace = aggregation({"eda": eda, "model": evaluation["normalized"]},
+                                       {"eda": weights["eda_weight"], "model": weights["model_weight"]})
+            result_trace["components"] = {"eda": quality_trace,
+                "model": calculation("piecewise: trivial -> 0, reference -> 50, perfect -> 100", evaluation, evaluation["normalized"])}
+        elif maze:
             result_trace = aggregation({"completion": completion * 100, "quality": quality * 100},
                                        {"completion": weights["completion_weight"], "quality": weights["quality_weight"]})
             result_trace["components"] = {"quality": quality_trace,

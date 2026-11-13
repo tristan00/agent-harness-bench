@@ -479,6 +479,7 @@ impl Service {
                             name.into(),
                         ],
                         build: None,
+                        predict: None,
                         env: Default::default(),
                         source_files: vec![],
                         ui: None,
@@ -592,7 +593,7 @@ impl Service {
             (j, run, c)
         };
         let mut session = None;
-        if j.launch_error.is_none() {
+        if j.launch_error.is_none() && c.config.benchmark != Benchmark::MlPredictor {
             let launch = (|| -> Result<(Protocol, Option<String>)> {
                 let artifact = self
                     .db()
@@ -746,6 +747,7 @@ impl Service {
                     task["inspiration"] = json!(inspiration);
                 }
                 if let Some(dataset) = run.dataset { task["dataset"] = json!(dataset); }
+                if let Some(ml) = run.ml { task["ml"] = json!(ml); }
                 Ok(task)
             }
             ("GET", ["health"]) => Ok(
@@ -893,6 +895,11 @@ impl Service {
                     progress = Some(score.progress());
                     let total = score.total();
                     (serde_json::to_value(score)?, total, 4)
+                } else if c.config.benchmark == Benchmark::MlPredictor {
+                    let score: EdaScore = serde_json::from_value(body)?;
+                    score.validate()?;
+                    let total = score.total();
+                    (serde_json::to_value(score)?, total, 4)
                 } else if c.config.benchmark == Benchmark::DatasetDashboard {
                     let score: DashboardScore = serde_json::from_value(body)?;
                     score.validate()?;
@@ -909,7 +916,7 @@ impl Service {
                     .as_deref()
                     .map(|id| db.artifact(id))
                     .transpose()?;
-                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":prompts::themes(&run),"inspiration":run.inspiration,"dataset":run.dataset,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
+                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":prompts::themes(&run),"inspiration":run.inspiration,"dataset":run.dataset,"ml":run.ml,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
                 report[format!("total_out_of_{}", count * 5)] = json!(total);
                 if let Some(progress) = progress {
                     report["prompt_version"] = json!(prompts::MAZE_VERSION);
@@ -1013,8 +1020,9 @@ mod tests {
     fn start(service: &Service, cid: &str, agent: &str) -> Value {
         let db = service.db();
         let c = db.campaign(cid).unwrap();
-        let run = Run::new(&c, agent, (c.config.benchmark == Benchmark::GameBuild).then(prompts::random_inspiration),
+        let mut run = Run::new(&c, agent, (c.config.benchmark == Benchmark::GameBuild).then(prompts::random_inspiration),
             (c.config.benchmark == Benchmark::DatasetDashboard).then(crate::datasets::random_assignment));
+        run.ml = (c.config.benchmark == Benchmark::MlPredictor).then(crate::ml::random_assignment);
         let token = crate::id();
         db.insert_run(&run, &token).unwrap();
         started(&service.admin, &c, &run, &token)
@@ -1288,6 +1296,49 @@ mod tests {
         assert_eq!(s.route("GET", &format!("/v1/runs/{}", b["run"]["id"].as_str().unwrap()), token, json!({})).unwrap_err().0, 401);
         assert_eq!(s.route("POST", "/v1/judges/claim", token, json!({"judge":"bad"})).unwrap_err().0, 401);
         assert!(Service::open(s.root.as_path()).is_err());
+    }
+
+    #[test]
+    fn ml_runs_get_training_data_only_and_an_eda_judgment_without_a_launch() {
+        let (_root, s, token, _) = setup();
+        let python = std::env::current_exe().unwrap();
+        let cid = campaign(&s, Benchmark::MlPredictor, json!({"ml_python":python}));
+        let started = start(&s, &cid, "ml");
+        let id = started["run"]["id"].as_str().unwrap().to_owned();
+        let task = s.route("GET", &format!("/v1/runs/{id}/task"), started["run_token"].as_str().unwrap(), Value::Null).unwrap();
+        let prompt = task["prompt"].as_str().unwrap();
+        let assignment = &task["ml"]["task"];
+        assert!(assignment["train"].as_array().unwrap().iter().all(|url| prompt.contains(url.as_str().unwrap())));
+        assert!(prompt.contains(&python.display().to_string()) && prompt.contains("\"predict\"") && prompt.contains("{input}"));
+        for hidden in ["adult.test", "optdigits.tes", "t10k", "reference"] {
+            assert!(!prompt.contains(hidden) && !task.to_string().contains(hidden), "{hidden}");
+        }
+        let path = format!("/v1/runs/{id}/submissions");
+        let scoped = started["run_token"].as_str().unwrap();
+        let missing_output = json!({"manifest":{"predict":["python","p.py","{input}"]},"files":[{"path":"p.py","text":"print(1)"}]});
+        assert_eq!(s.route("POST", &path, scoped, missing_output).unwrap_err().0, 400);
+        s.route("POST", &path, scoped, json!({"manifest":{"predict":["python","p.py","{input}","{output}"]},"files":[{"path":"p.py","text":"print(1)"},{"path":"EDA.md","text":"# EDA"}]})).unwrap();
+        expire(&s, &id);
+        s.tick().unwrap();
+        s.route("POST", &format!("/v1/campaigns/{cid}/score"), &token, json!({})).unwrap();
+        s.evaluate(false).unwrap();
+        let claimed = s.route("POST", "/v1/judges/claim", &token, json!({"judge":"fixture","run_id":id})).unwrap();
+        assert!(claimed["job"]["launch_error"].is_null() && claimed["job"]["ui_url"].is_null());
+        assert!(claimed["prompt"].as_str().unwrap().contains("EDA report"));
+        let judgment = claimed["job"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(s.route("POST", &format!("/v1/judgments/{judgment}/action"), &token, json!({"action":"describe"})).unwrap_err().0, 409);
+        {
+            let db = s.db();
+            let mut j = db.judgment(&judgment).unwrap();
+            j.status = "scoring".into();
+            j.score_deadline_ms = Some(now_ms() + 10_000);
+            db.save_judgment(&j).unwrap();
+        }
+        let criterion = json!({"score":4,"evidence":"Observed tables"});
+        let report = s.route("POST", &format!("/v1/judgments/{judgment}/score"), &token,
+            json!({"thoroughness":criterion,"prose_economy":criterion,"presentation":criterion,"information_architecture":criterion,"notes":""})).unwrap()["report"].clone();
+        assert_eq!((report["total_out_of_20"].as_u64(), report["mean_out_of_5"].as_f64()), (Some(16), Some(4.0)));
+        assert_eq!(report["ml"], task["ml"]);
     }
 
     #[test]

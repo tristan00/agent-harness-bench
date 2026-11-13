@@ -5,6 +5,7 @@ pub mod chess;
 pub mod coordinator;
 pub mod datasets;
 pub mod engine;
+pub mod ml;
 pub mod model;
 pub mod process;
 pub mod prompts;
