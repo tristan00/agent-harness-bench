@@ -21,7 +21,9 @@ fn empty_object() -> Value {
 }
 
 pub(crate) fn allowed_agents(settings: &Value) -> bool {
-    ["planner", "worker"].iter().all(|role| settings[role].as_str().is_some_and(|id| crate::agents::allowed(id, crate::agents::family())))
+    let family = crate::agents::family();
+    let listed = settings.get("enabled_agents").map_or(Some(true), |list| list.as_array().map(|items| items.iter().all(|id| id.as_str().is_some_and(|id| crate::agents::allowed(id, family)))));
+    listed == Some(true) && ["planner", "worker"].iter().all(|role| settings[role].as_str().is_some_and(|id| crate::agents::allowed(id, family)))
 }
 
 #[derive(Deserialize)]
@@ -601,6 +603,9 @@ mod tests {
             }
         }
         assert!(allowed_agents(&json!({"planner":"local_qwen3_4b","worker":"sol_6_1_light"})));
+        assert!(allowed_agents(&json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","enabled_agents":["local_granite_3b","sol_6_1_medium"]})));
+        assert!(!allowed_agents(&json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","enabled_agents":["claude_haiku_5_5_low"]})));
+        assert!(!allowed_agents(&json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","enabled_agents":"local_granite_3b"})));
         for invalid in [Value::Null, json!("sol_light"), json!("astra_xhigh"), json!("claude_haiku_5_5_low")] {
             assert!(!allowed_agents(&json!({"planner":invalid,"worker":"sol_6_1_light"})));
             assert!(!allowed_agents(&json!({"planner":"sol_6_1_light","worker":invalid})));

@@ -56,11 +56,30 @@ def workspace_agent(selection):
 def workspace_settings(value):
     for role in ("planner", "worker"):
         resolve(value.get(role), defined=value.get("agents"))
+    listed = value.get("enabled_agents")
+    if listed is not None and (not isinstance(listed, list) or not all(isinstance(name, str) for name in listed)):
+        raise ValueError("enabled_agents must be a list of agent ids")
+    for name in listed or []:
+        resolve(name, defined=value.get("agents"))
     return value
 
 
-def agent_definitions(settings):
-    return {settings[role]: resolve(settings[role], defined=settings.get("agents")) for role in ("planner", "worker")}
+def enabled_agents(settings, family=None):
+    family = detect_family() if family is None else family
+    listed = settings.get("enabled_agents")
+    if listed is None:
+        listed = [name for name, agent in CATALOG.items() if not agent.get("retired") and allowed(agent, family)]
+    return list(dict.fromkeys([*listed, settings["planner"], settings["worker"]]))
+
+
+def agent_definitions(settings, family=None):
+    return {name: resolve(name, family, settings.get("agents")) for name in enabled_agents(settings, family)}
+
+
+def coordinator_settings(settings, family=None):
+    registered = {key: value for key, value in settings.items() if key != "enabled_agents"}
+    registered["agents"] = agent_definitions(settings, family)
+    return registered
 
 
 def command_arguments(selection, retired=False):

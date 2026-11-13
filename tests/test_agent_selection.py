@@ -41,8 +41,28 @@ class AgentSelection(unittest.TestCase):
                        {**defined["tiny"], "model": " "}):
             with self.assertRaises(ValueError):
                 selection.resolve("tiny", "codex", {"tiny": broken})
-        settings = {"planner": "tiny", "worker": "local_qwen3_4b", "agents": defined}
-        self.assertEqual(set(selection.agent_definitions(settings)), {"tiny", "local_qwen3_4b"})
+        settings = {"planner": "tiny", "worker": "local_qwen3_4b", "agents": defined, "enabled_agents": []}
+        self.assertEqual(set(selection.agent_definitions(settings, "claude")), {"tiny", "local_qwen3_4b"})
+
+    def test_enabled_agents_default_to_the_family_catalog_and_reach_the_coordinator(self):
+        settings = {"planner": "sol_6_1_medium", "worker": "sol_6_1_light", "limits": {}}
+        everything = selection.enabled_agents(settings, "codex")
+        self.assertIn("local_granite_3b", everything)
+        self.assertFalse(any(name.startswith("claude_") or name == "sol_light" for name in everything))
+        narrowed = {**settings, "enabled_agents": ["local_qwen3_4b"]}
+        self.assertEqual(selection.enabled_agents(narrowed, "codex"), ["local_qwen3_4b", "sol_6_1_medium", "sol_6_1_light"])
+        registered = selection.coordinator_settings(narrowed, "codex")
+        self.assertNotIn("enabled_agents", registered)
+        self.assertEqual(set(registered["agents"]), {"local_qwen3_4b", "sol_6_1_medium", "sol_6_1_light"})
+        self.assertEqual(registered["agents"]["local_qwen3_4b"]["model"], "qwen3-4b-2507-fp8")
+        with self.assertRaises(ValueError):
+            selection.coordinator_settings({**settings, "enabled_agents": ["claude_haiku_5_5_low"]}, "codex")
+
+    def test_local_models_stay_inside_forty_percent_of_the_gpu(self):
+        for name, agent in selection.CATALOG.items():
+            if agent["provider"] == "local":
+                gigabytes = float(agent["note"].split("about ")[1].split(" ")[0])
+                self.assertLessEqual(gigabytes, 12.8 * 0.75, name)
 
     def test_codex_arguments_only_for_codex_agents(self):
         selection_family = selection.detect_family

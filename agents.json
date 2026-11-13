@@ -1,12 +1,15 @@
 {
-  "sol_light": {"provider": "openai", "harness": "codex", "model": "gpt-6-sol", "effort": "low", "retired": true},
-  "luna_6_high": {"provider": "openai", "harness": "codex", "model": "gpt-6-luna", "effort": "high"},
-  "sol_6_1_light": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "low"},
-  "sol_6_1_medium": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
-  "claude_haiku_5_5_low": {"provider": "anthropic", "harness": "claude_code", "model": "claude-haiku-5-5", "effort": "low"},
-  "claude_sonnet_5_5_low": {"provider": "anthropic", "harness": "claude_code", "model": "claude-sonnet-5-5", "effort": "low"},
-  "claude_sonnet_5_5_medium": {"provider": "anthropic", "harness": "claude_code", "model": "claude-sonnet-5-5", "effort": "medium"},
-  "claude_opus_5_5_medium": {"provider": "anthropic", "harness": "claude_code", "model": "claude-opus-5-5", "effort": "medium"},
-  "local_qwen3_4b": {"provider": "local", "harness": "openai_compatible", "model": "qwen3-4b-2507-fp8", "endpoint": "http://127.0.0.1:8120/v1"},
-  "local_qwen3_8b": {"provider": "local", "harness": "openai_compatible", "model": "qwen3-8b-fp8", "endpoint": "http://127.0.0.1:8120/v1"}
+  "sol_light": {"provider": "openai", "harness": "codex", "model": "gpt-6-sol", "effort": "low", "retired": true, "note": "Retired"},
+  "luna_6_high": {"provider": "openai", "harness": "codex", "model": "gpt-6-luna", "effort": "high", "note": "Hosted, largest, high reasoning; hardest design and debugging"},
+  "sol_6_1_light": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "low", "note": "Hosted, mid size, low reasoning; routine implementation"},
+  "sol_6_1_medium": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "medium", "note": "Hosted, mid size, medium reasoning; multi-file features"},
+  "claude_haiku_5_5_low": {"provider": "anthropic", "harness": "claude_code", "model": "claude-haiku-5-5", "effort": "low", "note": "Hosted, small, fast; routine edits, summaries, checks"},
+  "claude_sonnet_5_5_low": {"provider": "anthropic", "harness": "claude_code", "model": "claude-sonnet-5-5", "effort": "low", "note": "Hosted, mid size, low effort; routine implementation"},
+  "claude_sonnet_5_5_medium": {"provider": "anthropic", "harness": "claude_code", "model": "claude-sonnet-5-5", "effort": "medium", "note": "Hosted, mid size, medium effort; multi-file features"},
+  "claude_opus_5_5_medium": {"provider": "anthropic", "harness": "claude_code", "model": "claude-opus-5-5", "effort": "medium", "note": "Hosted, largest; hardest design and debugging"},
+  "local_granite_3b": {"provider": "local", "harness": "openai_compatible", "model": "granite4.2-3b-fp8", "endpoint": "http://127.0.0.1:8120/v1", "note": "Local 3B, about 4 GB; one-line edits, renames, short summaries"},
+  "local_ministral_3b": {"provider": "local", "harness": "openai_compatible", "model": "ministral3-3b", "endpoint": "http://127.0.0.1:8120/v1", "note": "Local 3B, about 7 GB; short summaries and simple checks"},
+  "local_phi4_mini": {"provider": "local", "harness": "openai_compatible", "model": "phi4-mini", "endpoint": "http://127.0.0.1:8120/v1", "note": "Local 3.8B, about 8 GB; small single-file edits"},
+  "local_qwen3_4b": {"provider": "local", "harness": "openai_compatible", "model": "qwen3-4b-2507-fp8", "endpoint": "http://127.0.0.1:8120/v1", "note": "Local 4B, about 5 GB; small single-file edits and summaries"},
+  "local_qwen3_8b": {"provider": "local", "harness": "openai_compatible", "model": "qwen3-8b-fp8", "endpoint": "http://127.0.0.1:8120/v1", "note": "Local 8B, about 9 GB; small features in one or two files"}
 }

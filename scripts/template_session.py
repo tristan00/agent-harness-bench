@@ -7,7 +7,7 @@ import subprocess
 import time
 
 from harness import Client, agent_environment
-from agent_selection import agent_definitions, detect_family, planner_command, workspace_settings
+from agent_selection import coordinator_settings, detect_family, planner_command, workspace_settings
 from workspace_prompts import documents
 
 
@@ -26,7 +26,7 @@ def main():
     coordinator = Client(profile["coordinator_url"])
     coordinator.request("POST", "/api/benchmark-runs", {
         "workspace": str(workspace), "group": profile["workspace_group"],
-        "settings": {**profile["workspace"], "agents": agent_definitions(settings)},
+        "settings": coordinator_settings(settings),
         "run_id": started["run"]["id"], "deadline_ms": started["run"]["deadline_ms"],
     })
     env = agent_environment(**profile.get("env", {}))
