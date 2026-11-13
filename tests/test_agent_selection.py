@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -63,6 +64,19 @@ class AgentSelection(unittest.TestCase):
             if agent["provider"] == "local":
                 gigabytes = float(agent["note"].split("about ")[1].split(" ")[0])
                 self.assertLessEqual(gigabytes, 12.8 * 0.75, name)
+
+    def test_luna_can_work_but_not_plan(self):
+        previous = os.environ.get("AGENT_FAMILY")
+        os.environ["AGENT_FAMILY"] = "codex"
+        try:
+            selection.workspace_settings({"planner": "sol_6_1_light", "worker": "luna_6_high"})
+            with self.assertRaises(ValueError):
+                selection.workspace_settings({"planner": "luna_6_high", "worker": "sol_6_1_light"})
+        finally:
+            if previous is None:
+                os.environ.pop("AGENT_FAMILY", None)
+            else:
+                os.environ["AGENT_FAMILY"] = previous
 
     def test_codex_arguments_only_for_codex_agents(self):
         selection_family = selection.detect_family

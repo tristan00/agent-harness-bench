@@ -12,7 +12,7 @@ import tempfile
 import time
 
 from harness import Client
-from agent_selection import WORKSPACE_CANDIDATES
+from agent_selection import CATALOG, WORKSPACE_CANDIDATES
 from smoke import rejects, wait_for
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,7 +58,8 @@ def main():
                 path = workspace_root / f"{prefix}-{index}"
                 path.mkdir()
                 candidates = list(WORKSPACE_CANDIDATES)
-                settings = selected_documents(path, {"planner": candidates[index % 3], "worker": candidates[(index + 1) % 3], "updates": "events" if index else "poll", "limits": {"words": 140 + index}})
+                planners = [name for name in candidates if not CATALOG[name].get("workerOnly")]
+                settings = selected_documents(path, {"planner": planners[index % len(planners)], "worker": candidates[(index + 1) % 3], "updates": "events" if index else "poll", "limits": {"words": 140 + index}})
                 workspaces.append({"path": str(path), "settings": settings})
             return {"profile": "fixture", "template_path": str(template), "workspace_root": str(workspace_root),
                     "workspaces": workspaces, "max_parallel": cap, "order_seed":960,

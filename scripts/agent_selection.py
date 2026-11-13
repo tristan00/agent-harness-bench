@@ -56,6 +56,8 @@ def workspace_agent(selection):
 def workspace_settings(value):
     for role in ("planner", "worker"):
         resolve(value.get(role), defined=value.get("agents"))
+    if resolve(value.get("planner"), defined=value.get("agents")).get("workerOnly"):
+        raise ValueError(f'Agent {value.get("planner")} can only be a worker')
     listed = value.get("enabled_agents")
     if listed is not None and (not isinstance(listed, list) or not all(isinstance(name, str) for name in listed)):
         raise ValueError("enabled_agents must be a list of agent ids")

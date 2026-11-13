@@ -23,7 +23,9 @@ fn empty_object() -> Value {
 pub(crate) fn allowed_agents(settings: &Value) -> bool {
     let family = crate::agents::family();
     let listed = settings.get("enabled_agents").map_or(Some(true), |list| list.as_array().map(|items| items.iter().all(|id| id.as_str().is_some_and(|id| crate::agents::allowed(id, family)))));
-    listed == Some(true) && ["planner", "worker"].iter().all(|role| settings[role].as_str().is_some_and(|id| crate::agents::allowed(id, family)))
+    listed == Some(true)
+        && ["planner", "worker"].iter().all(|role| settings[role].as_str().is_some_and(|id| crate::agents::allowed(id, family)))
+        && settings["planner"].as_str().is_some_and(crate::agents::can_plan)
 }
 
 #[derive(Deserialize)]
@@ -607,7 +609,8 @@ mod tests {
 
     #[test]
     fn batch_agents_must_be_catalogued_and_allowed_for_the_launcher_family() {
-        for planner in ["luna_6_high", "sol_6_1_light", "sol_6_1_medium"] {
+        assert!(!allowed_agents(&json!({"planner":"luna_6_high","worker":"sol_6_1_light"})));
+        for planner in ["sol_6_1_light", "sol_6_1_medium"] {
             for worker in ["luna_6_high", "sol_6_1_light", "sol_6_1_medium"] {
                 assert!(allowed_agents(&json!({"planner":planner,"worker":worker})));
             }

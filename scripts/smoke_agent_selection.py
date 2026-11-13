@@ -26,10 +26,11 @@ def main():
                'HARNESS_PLANNER_PROMPT':str(prompt), 'HARNESS_PLANNER_REQUEST':str(request),
                'HARNESS_PLANNER_RESULT':str(result), 'COORDINATOR_REQUEST':str(request), 'COORDINATOR_RESULT':str(result)}
         for selection,(model,effort) in WORKSPACE_CANDIDATES.items():
-            settings=selected_documents(root, {'planner':selection,'worker':selection})
+            planner=selection if not CATALOG[selection].get('workerOnly') else 'sol_6_1_light'
+            settings=selected_documents(root, {'planner':planner,'worker':selection})
             env['HARNESS_WORKSPACE_PLANNER']=selection
             commands=[([sys.executable,str(scripts/'template_planner.py')],{},'template planner'),
-                      ([sys.executable,str(scripts/'codex_planner.py')],{'workspace':str(root),'workspace_settings':settings},'legacy planner')]
+                      ([sys.executable,str(scripts/'codex_planner.py')],{'workspace':str(root),'workspace_settings':settings},'legacy planner')] if planner==selection else []
             for stage in ['implementation','review','replan']:
                 commands.append(([str(args.coordinator.resolve()),'--codex'],{'stage':stage,'worker':selection,'agent':CATALOG[selection],'family':'codex',
                     'workerProtocol':{'text':'Selected worker instructions.'},'task':{'model':'gpt-6-astra','effort':'xhigh','cwd':str(root)},

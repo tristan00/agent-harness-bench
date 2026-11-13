@@ -1,6 +1,6 @@
 {
   "sol_light": {"provider": "openai", "harness": "codex", "model": "gpt-6-sol", "effort": "low", "retired": true, "note": "Retired"},
-  "luna_6_high": {"provider": "openai", "harness": "codex", "model": "gpt-6-luna", "effort": "high", "note": "Hosted, largest, high reasoning; hardest design and debugging"},
+  "luna_6_high": {"provider": "openai", "harness": "codex", "model": "gpt-6-luna", "effort": "high", "workerOnly": true, "note": "Hosted, largest, high reasoning; hardest design and debugging"},
   "sol_6_1_light": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "low", "note": "Hosted, mid size, low reasoning; routine implementation"},
   "sol_6_1_medium": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "medium", "note": "Hosted, mid size, medium reasoning; multi-file features"},
   "claude_haiku_5_5_low": {"provider": "anthropic", "harness": "claude_code", "model": "claude-haiku-5-5", "effort": "low", "note": "Hosted, small, fast; routine edits, summaries, checks"},

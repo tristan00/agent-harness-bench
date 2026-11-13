@@ -34,6 +34,10 @@ pub fn family() -> Option<&'static str> {
     *FAMILY.get_or_init(|| Some("codex"))
 }
 
+pub fn can_plan(id: &str) -> bool {
+    catalog()[id]["workerOnly"] != true
+}
+
 pub fn allowed(id: &str, family: Option<&str>) -> bool {
     let catalog = catalog();
     let agent = &catalog[id];
@@ -69,5 +73,6 @@ mod tests {
         assert!(allowed("claude_haiku_5_5_low", Some("claude")) && !allowed("claude_haiku_5_5_low", Some("codex")));
         assert!(allowed("local_qwen3_4b", None) && allowed("local_qwen3_4b", Some("claude")));
         assert!(!allowed("sol_light", Some("codex")) && !allowed("missing", Some("codex")));
+        assert!(!can_plan("luna_6_high") && can_plan("sol_6_1_light") && allowed("luna_6_high", Some("codex")));
     }
 }
