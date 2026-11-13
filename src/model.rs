@@ -37,7 +37,7 @@ impl Default for Config {
             judge_seconds: 300,
             score_seconds: 120,
             build_seconds: 120,
-            seed: 960,
+            seed: crate::random_seed(),
             positions: 4,
             max_plies: 400,
             initial_elo: 1500.0,
@@ -105,6 +105,8 @@ pub struct Campaign {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Run {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspiration: Option<crate::prompts::Inspiration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset: Option<crate::datasets::Assignment>,
     pub id: String,

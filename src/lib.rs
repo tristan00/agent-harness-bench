@@ -24,6 +24,11 @@ pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+pub fn random_seed() -> u64 {
+    let bytes = uuid::Uuid::new_v4();
+    u64::from_le_bytes(bytes.as_bytes()[8..].try_into().unwrap())
+}
+
 /// Versioned, reproducible PRNG for scheduling and prompt theme selection.
 pub fn random(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e3779b97f4a7c15);

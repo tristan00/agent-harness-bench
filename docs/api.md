@@ -39,7 +39,6 @@ Success returns 200 JSON. Errors return `{"error":"..."}` with 400 (validation),
   "build_seconds": 120,
   "judge_seconds": 300,
   "score_seconds": 120,
-  "seed": 960,
   "positions": 4,
   "max_plies": 400,
   "initial_elo": 1500,
@@ -49,7 +48,7 @@ Success returns 200 JSON. Errors return `{"error":"..."}` with 400 (validation),
 }
 ```
 
-`benchmark` is `chess960`, `game_build`, or `dataset_dashboard`. Omitting development time uses 600 seconds for chess, 1800 for games, and 900 for dashboards. Dashboards receive an independent random dataset assignment per workspace/run, persisted for later scoring. Omitting the seed generates one from OS randomness; returned config stores it. Theme words are sampled once per game campaign. Same seed, prompt version and implementation reproduce themes and chess schedule.
+`benchmark` is `chess960`, `game_build`, or `dataset_dashboard`. Omitting development time uses 600 seconds for chess, 1800 for games, and 900 for dashboards. Dashboards receive an independent random dataset assignment per workspace/run, persisted for later scoring. Omitting the seed generates one from OS randomness; returned config stores it. New game runs independently sample and persist `run.inspiration` (registry version, seed and three themes). Builders and judges receive those run-specific themes. A campaign seed pins chess positions/order only; it does not reuse game or dashboard assignments. Existing runs without inspiration metadata keep their historical campaign themes.
 
 Development/enrollment range: 1â€“86400 seconds. Exploration/scoring: 1â€“3600. Compilation: 1â€“1800. Start positions: 1â€“960; game cap: 2â€“2000 plies. Elo K: `(0,100]`. Up to 32 candidate runs per campaign; agent names are unique within a campaign. Up to 16 distinct `pool_run_ids` reference previously scored chess solutions with source snapshots in this database. They are rebuilt in fresh work directories; original scores are never overwritten. Baselines/imported entries appear in the pool standings but do not get new run records.
 

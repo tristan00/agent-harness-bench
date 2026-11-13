@@ -243,6 +243,22 @@ pub fn play(entries: &[Entry], pairing: Pairing, max_plies: u16) -> Result<GameR
 mod tests {
     use super::*;
     #[test]
+    fn new_tournaments_randomize_positions_while_explicit_seeds_replay() {
+        let configurations: Vec<_> = (0..16).map(|_| Config::default()).collect();
+        let seeds: std::collections::HashSet<_> = configurations.iter().map(|c| c.seed).collect();
+        assert_eq!(seeds.len(),16);
+        let positions: std::collections::HashSet<Vec<_>> = configurations.iter().map(|c| {
+            let mut starts: Vec<_> = schedule(c,2).iter().map(|game| game.position).collect();
+            starts.sort(); starts.dedup();
+            assert_eq!(starts.len(),4);
+            starts
+        }).collect();
+        assert!(positions.len() > 1);
+        let first: Config = serde_json::from_value(serde_json::json!({"seed":960})).unwrap();
+        let second: Config = serde_json::from_value(serde_json::json!({"seed":960})).unwrap();
+        assert_eq!(serde_json::to_value(schedule(&first,4)).unwrap(),serde_json::to_value(schedule(&second,4)).unwrap());
+    }
+    #[test]
     fn schedule_balances_colors_and_replays() {
         let c = Config {
             positions: 3,

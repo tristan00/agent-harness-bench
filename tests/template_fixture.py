@@ -49,6 +49,9 @@ def main():
     assert {"run_id", "benchmark", "prompt"} <= set(task)
     if task["benchmark"] == "dataset_dashboard":
         assert task["dataset"]["dataset"]["id"] in task["prompt"]
+    if task["benchmark"] == "game_build":
+        assert len(task["themes"]) == 3 and task["themes"] == task["inspiration"]["themes"]
+        assert all(word in task["prompt"] for word in task["themes"])
     assert task["benchmark"] in prompt
     coordinator = Client(os.environ["COORDINATOR_URL"])
     state = coordinator.request("GET", "/api/state")

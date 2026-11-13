@@ -1496,7 +1496,8 @@
           },
           "seed": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Fresh random seed when omitted. Explicit values replay chess positions and game order; game inspiration and dashboard datasets are independently assigned per run."
           },
           "positions": {
             "type": "integer",

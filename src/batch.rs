@@ -114,6 +114,10 @@ impl Service {
         campaign.status = "enrolling".into();
         campaign.created_at_ms = now_ms();
         campaign.enrollment_deadline_ms = i64::MAX;
+        if name == "game_build" { campaign.themes.clear(); }
+        if name == "chess960" && batch["chess_seed_explicit"] == false {
+            campaign.config.seed = crate::random_seed();
+        }
         for case in batch["cases"]
             .as_array_mut()
             .unwrap()
@@ -135,6 +139,11 @@ impl Service {
             case["workspace_name"] = json!(relative);
             case["campaign_id"] = json!(campaign.id);
             case["status"] = json!("queued");
+            match name {
+                "game_build" => case["inspiration"] = json!(prompts::random_inspiration()),
+                "dataset_dashboard" => case["dataset"] = json!(crate::datasets::random_assignment()),
+                _ => {}
+            }
             for field in ["run_id", "error", "started_at_ms", "ended_at_ms"] {
                 case.as_object_mut().unwrap().remove(field);
             }
@@ -328,11 +337,7 @@ impl Service {
             }
             let campaign = Campaign {
                 id: crate::id(),
-                themes: if benchmark == Benchmark::GameBuild {
-                    prompts::themes(config.seed)
-                } else {
-                    vec![]
-                },
+                themes: vec![],
                 config,
                 created_at_ms: now_ms(),
                 enrollment_deadline_ms: i64::MAX,
@@ -355,14 +360,18 @@ impl Service {
                 if benchmark == Benchmark::DatasetDashboard {
                     case["dataset"] = json!(crate::datasets::random_assignment());
                 }
+                if benchmark == Benchmark::GameBuild {
+                    case["inspiration"] = json!(prompts::random_inspiration());
+                }
                 cases.push(case);
             }
             campaign_records.push(campaign);
         }
-        let order_seed = request.order_seed.unwrap_or_else(|| u64::from_le_bytes(uuid::Uuid::new_v4().as_bytes()[..8].try_into().unwrap()));
+        let order_seed = request.order_seed.unwrap_or_else(crate::random_seed);
         shuffle(&mut cases, order_seed);
         let batch = json!({"id":id,"status":"running","created_at_ms":now_ms(),"max_parallel":request.max_parallel,
             "order_seed":order_seed,"order_algorithm":"splitmix64-fisher-yates.v1",
+            "chess_seed_explicit":request.task_configs.get("chess960").and_then(|config| config.get("seed")).is_some(),
             "profile":request.profile,"profile_config":profile,"template":template,"template_path":request.template_path,
             "campaigns":campaigns,"cases":cases});
         let tx = db.db.unchecked_transaction()?;
@@ -486,6 +495,7 @@ impl Service {
         let campaign = db.campaign(case["campaign_id"].as_str().ok_or("missing campaign")?)?;
         let now = now_ms();
         let run = Run {
+            inspiration: case.get("inspiration").map(|value| serde_json::from_value(value.clone())).transpose()?,
             dataset: case
                 .get("dataset")
                 .map(|value| serde_json::from_value(value.clone()))
@@ -512,7 +522,7 @@ impl Service {
         batch["cases"][index]["started_at_ms"] = json!(now);
         db.save_batch(batch)?;
         tx.commit()?;
-        let started = json!({"run":run,"run_token":token,"prompt":prompts::builder_for_run(&campaign, &run),"config":campaign.config});
+        let started = json!({"run":run,"run_token":token,"prompt":prompts::builder_for_run(&campaign, &run),"config":campaign.config,"themes":prompts::themes_for_run(&campaign, &run)});
         match coordinator::launch(&self.root, url, &started, profile) {
             Ok(child) => {
                 workflows.insert(run.id.clone(), child);
@@ -642,9 +652,29 @@ mod tests {
         assert_eq!(batch["order_seed"],960);
         assert_eq!(batch["cases"].as_array().unwrap().len(),48);
         assert!(batch["cases"].as_array().unwrap().iter().all(|case| case["status"] == "queued"));
+        for (benchmark, field) in [("game_build", "inspiration"), ("dataset_dashboard", "dataset")] {
+            let assigned: Vec<_> = batch["cases"].as_array().unwrap().iter().filter(|case| case["benchmark"] == benchmark).collect();
+            assert_eq!(assigned.len(), 16);
+            assert_eq!(assigned.iter().map(|case| case[field]["seed"].as_u64().unwrap()).collect::<HashSet<_>>().len(), 16);
+        }
         let id = batch["id"].as_str().unwrap().to_owned();
         drop(service);
         let reopened = Service::open(root.path()).unwrap();
         assert_eq!(public(&reopened.db().batch(&id).unwrap()), batch);
+        let mut stopped = reopened.db().batch(&id).unwrap();
+        stopped["status"] = json!("stopped");
+        for case in stopped["cases"].as_array_mut().unwrap() { case["status"] = json!("stopped"); }
+        reopened.db().save_batch(&stopped).unwrap();
+        for (benchmark, field) in [("game_build", "inspiration"), ("dataset_dashboard", "dataset")] {
+            let retried = reopened.retry_benchmark(&id, benchmark).unwrap();
+            for case in retried["cases"].as_array().unwrap().iter().filter(|case| case["benchmark"] == benchmark) {
+                let original = stopped["cases"].as_array().unwrap().iter().find(|old| old["workspace"] == case["workspace"] && old["benchmark"] == benchmark).unwrap();
+                assert_ne!(case[field]["seed"], original[field]["seed"]);
+            }
+        }
+        let chess_id = stopped["campaigns"]["chess960"].as_str().unwrap();
+        let original_seed = reopened.db().campaign(chess_id).unwrap().config.seed;
+        let retried = reopened.retry_benchmark(&id, "chess960").unwrap();
+        assert_ne!(reopened.db().campaign(retried["campaigns"]["chess960"].as_str().unwrap()).unwrap().config.seed, original_seed);
     }
 }

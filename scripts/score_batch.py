@@ -254,7 +254,7 @@ def score_batch(args, output, config):
                                    "timeout_seconds":args.timeout, "implementation_sha256":implementation},
               "token_scoring_mode":mode,"ranking":aggregate(scored,config),
               "notes":["Only selected final attempts are scored; previous aborted attempts are excluded.",
-                       "Recorded historical workspace settings are preserved. Later Sol-light settings do not rewrite this batch.",
+                       "Historical workspace settings are preserved without reinterpreting model or prompt selections.",
                        "Dataset dashboard assignments differ across workspaces; this is one observation per assignment, not a causal estimate.",
                        "Source lines include comments and vendored source, matching the existing artifact counter."]}
     write_json(output / "scores.json", report)
