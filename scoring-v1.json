@@ -6,6 +6,6 @@
   "references": {"elo_scale": 400, "source_lines": 1000, "task_count": 10, "relation_types": 4, "edges_per_task": 2, "tokens": 100000},
   "incomplete_token_fallback": "agent_seconds_per_development_second",
   "missing_submission": {"result": 0, "simplicity": 0},
-  "judge_selections": {"codex": "sol_light", "claude": "claude_sonnet_5_5_low"},
+  "judge_selections": {"codex": "sol_light", "claude": "claude_opus_5_5_medium"},
   "playwright_mcp_version": "0.0.85"
 }
