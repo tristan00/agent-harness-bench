@@ -7,13 +7,12 @@ Tokens: **admin** manages campaigns and starts runs; **run** can read/upload onl
 | Method/path | Token | Purpose |
 | --- | --- | --- |
 | `GET /health` | None | Health, protocol version, server Unix milliseconds |
-| `GET /v1/benchmarks` | Admin | Benchmark IDs and defaults |
+| `POST /v1/admin/wipe` | Admin | Stop running planners and judges, then delete every batch, campaign, run, submission, judgment, report, game and event and their files |
 | `POST /v1/campaigns` | Admin | Create configured cohort; enrollment clock starts immediately |
 | `GET /v1/campaigns` | Admin | Campaign list |
 | `GET /v1/campaigns/{id}` | Admin | Campaign, runs, completed-game count |
 | `POST /v1/campaigns/{id}/close` | Admin | Close enrollment early, retain development deadlines |
 | `POST /v1/campaigns/{id}/score` | Admin | Manually enable chess tournament or game preparation and judge queue; close enrollment |
-| `GET /v1/campaigns/{id}/games` | Admin | Persisted games and per-move FEN/timing traces |
 | `POST /v1/runs` | Admin | Start agent's timed run; returns prompt, run token, config, deadline |
 | `GET /v1/runs/{id}` | Run | Run state, optional final report, server time |
 | `POST /v1/runs/{id}/submissions` | Run | Atomically select a complete pre-deadline snapshot |
@@ -117,12 +116,12 @@ During `exploring`, POST `{"action":"describe","params":{}}` and other actions t
 
 All five scores are integer 0â€“5 with nonempty evidence of at most 10000 bytes. Name 1â€“10 comparable published games. Notes are at most 20000 bytes. The service checks schema and lifecycle; it cannot verify an agent's subjective honesty. The final report contains all criteria, sum/25, mean/5, judge identity, prompt/config/themes, source hash/LOC and measured protocol/resource evidence. A scoring timeout or restart is an explicit evaluation failure, not five invented zeros.
 
-## Service-managed coordinator workflows
+## Dashboard judgments
 
 Dashboard judgments use the same lifecycle and endpoints. Their score object contains six criterion objects: `completeness`, `information_architecture`, `prose_economy`, `animation`, `originality` and `performance`, plus a `measurements` object and `notes`. Each criterion uses the same integer 0–5 and evidence validation as games. Measurements record browser load/paint/render/interaction observations and methods, with unavailable values explicitly disclosed. Dashboard reports contain `total_out_of_30`; game reports retain `total_out_of_25`. Both also expose `total`, `maximum` and `mean_out_of_5`. A run without any accepted submission is recorded as failed and receives no judge job.
 
 The [batch scoring command](scoring.md) performs the campaign requests, fresh reviewer launches and score submission automatically, then combines quality, source simplicity and deterministic framework metrics.
 
-See [coordinator workflow](coordinator.md#api-and-evidence) for `/v1/coordinator-profiles`, `/v1/coordinator-runs`, and run-scoped `/coordinator` and `/iterations` endpoints. These add completed-iteration submissions without changing the existing direct-agent snapshot API.
+See [shared coordinator](coordinator.md#iteration-api) for the run-scoped `/iterations` endpoints. They add completed-iteration submissions without changing the existing direct-agent snapshot API.
 
 Game evaluation also requires an explicit administrator `POST /v1/campaigns/{id}/score` request. Until requested, frozen games are neither built nor queued for judges. After the request, each expired run is prepared and queued; a judge must separately claim it. Closing enrollment alone does not enable evaluation.

@@ -11,10 +11,9 @@ A Rust API service that gives external coding agents timed tasks, freezes their 
 ## Run on this Windows machine
 
 For the **service-managed agent coordinator workflow**, run `./scripts/setup-coordinator.ps1`.
-It builds both Rust services, configures Codex as the initial planner/worker adapter, and starts the
+It builds both Rust services, writes a `default` launch profile for the shared coordinator, and starts the
 benchmark service at `http://127.0.0.1:8741`. State and build output default to `../runtime`, outside
-both source repositories. Template batches use the shared coordinator board with workspace filters.
-The legacy single-run adapter starts a private coordinator; see [coordinator workflow](docs/coordinator.md).
+both source repositories. Template batches use the shared coordinator board with workspace filters; see [shared coordinator](docs/coordinator.md).
 
 ```powershell
 # Fetch once, then build and start a hidden background service.
@@ -47,7 +46,7 @@ Game agents receive the requested genre/theme requirements plus the executable c
 
 ## Start agents through the API
 
-Every agent launch requires explicit workspace selections. `workspace-settings.json` contains explicit selections, for example `{"planner":"luna_6_high","worker":"sol_6_1_light"}`. Eligible candidates are `luna_6_high` (`gpt-6-luna`, `high`), `sol_6_1_light` (`gpt-6.1-sol`, `low`) and `sol_6_1_medium` (`gpt-6.1-sol`, `medium`). Custom agent commands must include both `{model}` and `{effort}` placeholders.
+Every agent launch requires explicit workspace selections. `workspace-settings.json` contains them, for example `{"planner":"PLANNER_ID","worker":"WORKER_ID"}`. Eligible planners are the `agents.json` entries the launching family allows: Anthropic agents under Claude Code, OpenAI agents under Codex. Custom agent commands must include both `{model}` and `{effort}` placeholders.
 
 ```powershell
 $campaign = python scripts/harness.py --token-file data/admin-token create chess960 | ConvertFrom-Json

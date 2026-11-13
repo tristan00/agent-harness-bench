@@ -49,9 +49,9 @@
         }
       }
     },
-    "/v1/benchmarks": {
-      "get": {
-        "summary": "Benchmark defaults",
+    "/v1/admin/wipe": {
+      "post": {
+        "summary": "Stop running planners and judges, then delete every batch, campaign, run, submission, judgment, report, game and event and their files",
         "security": [
           {
             "bearer": []
@@ -239,59 +239,6 @@
     "/v1/campaigns/{id}/close": {
       "post": {
         "summary": "Close enrollment",
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "x-auth-role": "admin",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success; see API reference for response envelope",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "JSON error with HTTP status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/campaigns/{id}/games": {
-      "get": {
-        "summary": "Game results and traces",
         "security": [
           {
             "bearer": []
@@ -949,153 +896,6 @@
         }
       }
     },
-    "/v1/coordinator-profiles": {
-      "get": {
-        "summary": "List configured coordinator profile names",
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "x-auth-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success; see API reference for response envelope",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "JSON error with HTTP status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/coordinator-runs": {
-      "post": {
-        "summary": "Enroll and launch a service-owned iterative coordinator workflow",
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "x-auth-role": "admin",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CoordinatorStart"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Success; see API reference for response envelope",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "JSON error with HTTP status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/runs/{id}/coordinator": {
-      "get": {
-        "summary": "Read workflow status and last controller progress",
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "x-auth-role": "run",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success; see API reference for response envelope",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "JSON error with HTTP status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/runs/{id}/iterations": {
       "get": {
         "summary": "Read accepted completed iterations in sequence",
@@ -1382,37 +1182,6 @@
     "/v1/benchmark-batches/{id}/dashboard": {
       "post": {
         "summary": "Append independently randomized dashboard runs to existing workspaces",
-        "x-auth-role": "admin",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Updated batch with cases"
-          }
-        }
-      }
-    },
-    "/v1/benchmark-batches/{id}/retry": {
-      "post": {
-        "summary": "Retry terminal benchmark cases while retaining previous attempts",
         "x-auth-role": "admin",
         "parameters": [
           {
