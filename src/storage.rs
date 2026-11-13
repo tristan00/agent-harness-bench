@@ -202,7 +202,7 @@ impl Store {
     }
     pub fn game(&self, campaign: &str, number: usize, data: &impl Serialize) -> Result<()> {
         self.db.execute(
-            "INSERT INTO games VALUES(?1,?2,?3)",
+            "INSERT OR REPLACE INTO games VALUES(?1,?2,?3)",
             params![campaign, number as i64, serde_json::to_string(data)?],
         )?;
         Ok(())

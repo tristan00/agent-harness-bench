@@ -25,6 +25,7 @@ pub struct Config {
     pub max_plies: u16,
     pub initial_elo: f64,
     pub elo_k: f64,
+    pub parallel_games: u16,
     pub baselines: bool,
     pub pool_run_ids: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -45,6 +46,7 @@ impl Default for Config {
             max_plies: 400,
             initial_elo: 1500.0,
             elo_k: 32.0,
+            parallel_games: 8,
             baselines: true,
             pool_run_ids: vec![],
             follow_ups: vec![],
@@ -89,6 +91,9 @@ impl Config {
             if n == 0 || n > max {
                 return Err(format!("{name} must be in 1..={max}").into());
             }
+        }
+        if !(1..=64).contains(&self.parallel_games) {
+            return Err("parallel_games must be in 1..=64".into());
         }
         if !(1..=960).contains(&self.positions)
             || !(2..=2000).contains(&self.max_plies)

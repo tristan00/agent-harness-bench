@@ -962,23 +962,27 @@ impl Service {
             db.save_campaign(&c)?;
             return Ok(());
         }
-        let schedule = chess::schedule(&c.config, entries.len());
         let mut table = chess::standings(&entries, &c.config);
-        let completed = self.db().games(&c.id)?;
-        for saved in &completed {
-            chess::rate(
-                &mut table,
-                &serde_json::from_value(saved.clone())?,
-                c.config.elo_k,
-            );
-        }
-        for (number, pairing) in schedule.into_iter().enumerate().skip(completed.len()) {
-            if self.stopping.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-            let record = chess::play(&entries, pairing, c.config.max_plies)?;
-            self.db().game(&c.id, number, &record)?;
-            chess::rate(&mut table, &record, c.config.elo_k);
+        let completed: Vec<chess::GameRecord> = self.db().games(&c.id)?.into_iter().map(serde_json::from_value).collect::<std::result::Result<_, _>>()?;
+        let mut number = 0;
+        for round in chess::rounds(&c.config, entries.len()) {
+            let records = if number + round.len() <= completed.len() {
+                completed[number..number + round.len()].to_vec()
+            } else {
+                if self.stopping.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let records = chess::play_round(&entries, &round, c.config.max_plies, c.config.parallel_games.into())?;
+                let db = self.db();
+                let tx = db.db.unchecked_transaction()?;
+                for (offset, record) in records.iter().enumerate() {
+                    db.game(&c.id, number + offset, record)?;
+                }
+                tx.commit()?;
+                records
+            };
+            chess::rate_round(&mut table, &records, c.config.elo_k);
+            number += round.len();
         }
         let db = self.db();
         let tx = db.db.unchecked_transaction()?;
@@ -986,7 +990,7 @@ impl Service {
             if standing.id.starts_with("baseline:") || standing.id.starts_with("pool:") {
                 continue;
             }
-            let report = json!({"benchmark":"chess960","prompt_version":prompts::VERSION,"campaign_id":c.id,"seed":c.config.seed,"config":c.config,
+            let report = json!({"benchmark":"chess960","prompt_version":prompts::VERSION,"campaign_id":c.id,"seed":c.config.seed,"config":c.config,"rating":"per_round_pre_round_elo",
                 "metrics":standing,"pool":table,"loc_definition":"nonblank physical source lines including comments; detected source extensions plus source_files"});
             db.save_report(&standing.id, &report)?;
             let mut run = db.run(&standing.id)?;

@@ -34,7 +34,7 @@ The service generates `data/admin-token` and `data/judge-token` (or accepts `HAR
 
 | Benchmark | Development default | Evaluation | Recorded metrics |
 | --- | --- | --- | --- |
-| `chess960` | 600 seconds | Seeded double round robin, every entry starts at 1500 Elo, K=32 | Elo change, nonblank physical source lines, W/D/L, forfeits, full game traces |
+| `chess960` | 600 seconds | Seeded double round robin played in rounds: each entry plays at most one game per round, up to `parallel_games` (default 8) at once; ratings start at 1500 and update once per round from pre-round Elo, K=32 | Elo change, nonblank physical source lines, W/D/L, forfeits, full game traces |
 | `dataset_dashboard` | 900 seconds | Fresh judge explores for 300 seconds, then 120 seconds to score | Six 0–5 ratings with evidence, browser measurements, independent dataset assignment and provenance |
 | `game_build` | 1800 seconds, configurable | Judge explores for 300 seconds, service stops game, then 120 seconds to score | Five 0–5 ratings, evidence, total/mean, API latency/counts, CPU and memory samples |
 | `maze_game` | 1800 seconds | Judge explores for 600 seconds, then 120 seconds to score | Requirement completion fractions and four 0–5 quality ratings with evidence |
