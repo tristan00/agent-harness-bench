@@ -14,7 +14,7 @@ Scoring is an explicit, separate step. The [batch scoring command](scoring.md) s
 
 ## Configuration
 
-Run `scripts/setup-coordinator.ps1` to add the template session commands to the `default` profile. Other profiles are preserved. For another provider, set `session_planner_command` to an argv array whose process reads the exact UTF-8 prompt from `HARNESS_PLANNER_PROMPT`. It inherits `HARNESS_URL`, `HARNESS_RUN_ID`, `HARNESS_RUN_TOKEN` and `COORDINATOR_URL`. No admin token or deadline is supplied in that planner environment. `session_command` normally runs `scripts/template_session.py`.
+Run `python scripts/service.py setup` to add the template session commands to the `default` profile. Other profiles are preserved. For another provider, set `session_planner_command` to an argv array whose process reads the exact UTF-8 prompt from `HARNESS_PLANNER_PROMPT`. It inherits `HARNESS_URL`, `HARNESS_RUN_ID`, `HARNESS_RUN_TOKEN` and `COORDINATOR_URL`. No admin token or deadline is supplied in that planner environment. `session_command` normally runs `scripts/template_session.py`.
 
 The planner launcher runs the required workspace setting `planner` in its own vendor's harness: a fresh `codex exec --ephemeral` invocation for OpenAI agents or headless `claude -p` for Anthropic agents, passing the template unchanged through stdin. The creator samples `planner` and `worker` independently from the agents the launching family allows. The selected pair is always explicit in workspace settings and every launch. Workers use it for implementation, review and replanning, taking precedence over task overrides and global CLI defaults. The CLI runs with unattended access to this trusted local workspace; process ownership is not a filesystem security boundary.
 
@@ -41,11 +41,10 @@ Example `batch.json` (directories must contain only their selected documents; co
 
 Copy each workspace's settings from the coordinator configuration into the request. The same settings apply to all three benchmarks. Parameters, benchmark seed and prompts are retained for later analysis. Fresh runs require fresh workspace directories; the utility never deletes or reuses previous solutions.
 
-```powershell
-$token = '../runtime/benchmark-service/admin-token'
-python scripts/harness.py --token-file $token benchmark-batch batch.json
-python scripts/harness.py --token-file $token batch-status BATCH_ID
-python scripts/harness.py --token-file $token batch-stop BATCH_ID
+```bash
+python scripts/harness.py --token-file ../runtime/benchmark-service/admin-token benchmark-batch batch.json
+python scripts/harness.py --token-file ../runtime/benchmark-service/admin-token batch-status BATCH_ID
+python scripts/harness.py --token-file ../runtime/benchmark-service/admin-token batch-stop BATCH_ID
 ```
 
 Admin routes: `POST /v1/benchmark-batches`, `GET /v1/benchmark-batches`, `GET /v1/benchmark-batches/ID`, `POST /v1/benchmark-batches/ID/stop`. The scoped planner route `GET /v1/runs/ID/task` returns the benchmark prompt without timing metadata. Existing snapshot and iteration APIs are unchanged. The development scheduler does not automatically submit or score; run the scoring command separately after development finishes.
@@ -58,4 +57,4 @@ Retired model selections remain readable in historical records but cannot start 
 
 New chess campaigns draw a fresh random seed by default, producing four random starts sampled without replacement and played in both colors. Supply `task_configs.chess960.seed` only to intentionally replay a tournament schedule. That seed does not control game inspiration or dashboard datasets. Restart never resamples saved assignments. Legacy batches keep their saved campaign seed and theme behavior.
 
-To stage a compiled update without interrupting a batch, write its absolute executable path to `DATA/next-service-binary`. The next `scripts/start.ps1` call without an explicit `-Binary` uses it and consumes the marker after successful startup. The helper refuses to start over an existing service. This does not schedule or perform a restart.
+To stage a compiled update without interrupting a batch, write its absolute executable path to `DATA/next-service-binary`. The next `python scripts/service.py start` without an explicit `--binary` uses it and consumes the marker after successful startup. The helper refuses to start over an existing service. This does not schedule or perform a restart.

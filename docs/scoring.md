@@ -2,8 +2,8 @@
 
 With the benchmark service running against the specified data directory, execute from this repository:
 
-```powershell
-python scripts/score_batch.py BATCH_ID --data D:/harness_work/runtime/benchmark-batches-20261112 --coordinator-data COORDINATOR_DATA_DIRECTORY --max-judges 2
+```bash
+python scripts/score_batch.py BATCH_ID --data ../runtime/benchmark-service --coordinator-data COORDINATOR_DATA_DIRECTORY --max-judges 2
 ```
 
 The shared coordinator's `/api/state` response gives `dataDirectory`. `--url` defaults to `http://127.0.0.1:8741`. Development must have finished. The command reads the admin token from the benchmark data directory and never passes it to reviewers. It requests all three campaign evaluations, runs the chess tournament through the service, starts and terminates reviewer processes, submits their ratings when scoring opens, computes metrics, and emits JSON plus an HTML ranking. No agent supervises scoring. Source submissions are frozen; scoring does not restart development or repair submissions.

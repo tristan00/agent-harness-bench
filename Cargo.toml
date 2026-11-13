@@ -19,7 +19,7 @@ tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
-rusqlite = "0.38"
+rusqlite = { version = "0.38", features = ["bundled"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]

@@ -6,7 +6,7 @@ Available benchmark types are `chess960`, `game_build`, `dataset_dashboard`, and
 
 ## Install and run
 
-From the benchmark repository in PowerShell, run `.\scripts\setup-coordinator.ps1`. It builds both services, writes a `default` launch profile if none exists and starts the benchmark service. Setup preserves an existing profiles file. Stop with `scripts/stop.ps1 -DataDirectory ../runtime/benchmark-service`; restart with `setup-coordinator.ps1 -SkipBuild`.
+From the benchmark repository, run `python scripts/service.py setup`. It builds both services, writes a `default` launch profile if none exists and starts the benchmark service. Setup preserves an existing profiles file. Stop with `python scripts/service.py stop`; restart with `python scripts/service.py setup --skip-build`.
 
 ## Launch profiles
 
@@ -39,8 +39,8 @@ On service restart, interrupted planner sessions are marked `interrupted`; they 
 
 ## Verification
 
-```powershell
-.\scripts\cargo-windows.ps1 test --locked
+```bash
+cargo test --locked
 python scripts/smoke_agent_selection.py
 python scripts/smoke_batch.py --binary PATH/TO/harness-bench.exe --coordinator PATH/TO/agent-coordinator.exe --evidence ../runtime/evidence/batch-smoke.json
 ```

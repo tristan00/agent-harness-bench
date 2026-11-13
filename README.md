@@ -8,24 +8,20 @@ For the controller's repeatable batch setup, see [template planner batches](docs
 
 A Rust API service that gives external coding agents timed tasks, freezes their last accepted source snapshot, runs evaluations, and stores evidence and scores in SQLite. Clocks, state transitions, chess rules, tournaments, process termination and score validation are implemented in code. Game and dashboard quality ratings come from fresh judge agents; the scoring process and all other metrics are controlled by code. See [one-command batch scoring](docs/scoring.md).
 
-## Run on this Windows machine
+## Run
 
-For the **service-managed agent coordinator workflow**, run `./scripts/setup-coordinator.ps1`.
+For the **service-managed agent coordinator workflow**, run `python scripts/service.py setup`.
 It builds both Rust services, writes a `default` launch profile for the shared coordinator, and starts the
 benchmark service at `http://127.0.0.1:8741`. State and build output default to `../runtime`, outside
 both source repositories. Template batches use the shared coordinator board with workspace filters; see [shared coordinator](docs/coordinator.md).
 
-```powershell
-# Fetch once, then build and start a hidden background service.
-& "$env:USERPROFILE\.cargo\bin\cargo.exe" fetch --locked
-.\scripts\start.ps1
-Invoke-RestMethod http://127.0.0.1:8741/health
-
-# Stop it later; snapshots and database are retained.
-.\scripts\stop.ps1
+```bash
+cargo build --release --locked
+python scripts/service.py start --binary target/release/harness-bench
+python scripts/service.py stop
 ```
 
-The build helper uses MSVC with bundled SQLite when installed, with a GNU/rust-lld and Windows SQLite fallback. On Linux/macOS: `cargo run --release --locked -- serve --data data`. The coordinator integration currently targets the Windows coordinator.
+`start` launches a detached background service and waits for `/health`; `stop` keeps snapshots and the database. Both default to `../runtime/benchmark-service` and accept `--data`. SQLite is bundled on every platform; on Windows the MSVC build tools are required. The coordinator integration currently targets the Windows coordinator.
 
 The service generates `data/admin-token` and `data/judge-token` (or accepts `HARNESS_API_TOKEN` / `HARNESS_JUDGE_TOKEN`, minimum 24 characters). The admin token is for the trusted harness controller; each builder gets its own scoped run token. Judges claim work using the judge token and receive a scoped judgment token. No LLM provider or credential is built in: connect your existing agent CLI using the adapters below.
 
@@ -48,13 +44,12 @@ Game agents receive the requested genre/theme requirements plus the executable c
 
 Every agent launch requires explicit workspace selections. `workspace-settings.json` contains them, for example `{"planner":"PLANNER_ID","worker":"WORKER_ID"}`. Eligible planners are the `agents.json` entries the launching family allows: Anthropic agents under Claude Code, OpenAI agents under Codex. Custom agent commands must include both `{model}` and `{effort}` placeholders.
 
-```powershell
-$campaign = python scripts/harness.py --token-file data/admin-token create chess960 | ConvertFrom-Json
-$campaignId = $campaign.campaign.id
+```bash
+python scripts/harness.py --token-file data/admin-token create chess960
 
 # Repeat for each agent, in separate controller processes before enrollment closes.
 # The agent argv is yours: any CLI can read the supplied prompt file.
-python scripts/harness.py --token-file data/admin-token run-agent $campaignId agent-a C:/bench-work/agent-a `
+python scripts/harness.py --token-file data/admin-token run-agent CAMPAIGN_ID agent-a /bench-work/agent-a \
   --workspace-settings workspace-settings.json --command-json '["my-agent", "--model", "{model}", "--effort", "{effort}", "--prompt-file", "{prompt_file}"]'
 ```
 
@@ -64,20 +59,20 @@ Game enrollment defaults to 60 seconds and is configurable through `enrollment_s
 
 For an immediate manual protocol trial:
 
-```powershell
-$c = python scripts/harness.py --token-file data/admin-token create chess960 | ConvertFrom-Json
-$r = python scripts/harness.py --token-file data/admin-token start $c.campaign.id example | ConvertFrom-Json
-python scripts/harness.py --token $r.run_token submit $r.run.id examples/chess_python
-python scripts/harness.py --token-file data/admin-token close $c.campaign.id
-python scripts/harness.py --token $r.run_token status $r.run.id
+```bash
+python scripts/harness.py --token-file data/admin-token create chess960
+python scripts/harness.py --token-file data/admin-token start CAMPAIGN_ID example
+python scripts/harness.py --token RUN_TOKEN submit RUN_ID examples/chess_python
+python scripts/harness.py --token-file data/admin-token close CAMPAIGN_ID
+python scripts/harness.py --token RUN_TOKEN status RUN_ID
 ```
 
 Use a short development limit in a configuration file for a quick trial; production defaults wait the full allotted time. Working examples: [Python chess](examples/chess_python), [Rust chess](examples/chess_rust), and [GUI + API game](examples/game). These are protocol fixtures, not benchmark answers or model evaluations.
 
 ## Connect a game judge
 
-```powershell
-python scripts/harness.py --token-file data/judge-token judge-worker judge-a C:/bench-work/judges `
+```bash
+python scripts/harness.py --token-file data/judge-token judge-worker judge-a /bench-work/judges \
   --workspace-settings workspace-settings.json --command-json '["my-judge-agent", "--model", "{model}", "--effort", "{effort}", "--prompt-file", "{prompt_file}"]'
 ```
 
@@ -95,9 +90,9 @@ This is a **trusted local-code runner**, bound to loopback. Candidates execute u
 
 ## Verify
 
-```powershell
-.\scripts\cargo-windows.ps1 test --locked
-.\scripts\cargo-windows.ps1 clippy --locked --all-targets '--' '-Dwarnings'
+```bash
+cargo test --locked
+cargo clippy --locked --all-targets -- -Dwarnings
 python scripts/smoke.py
 ```
 
