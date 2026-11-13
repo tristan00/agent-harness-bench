@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import urllib.parse
 
 from harness import Client, agent_environment
 from agent_selection import detect_family, planner_command, workspace_settings
@@ -27,6 +28,17 @@ def active_tasks(coordinator, workspace):
     root = str(Path(workspace).resolve()).lower().lstrip("\\\\?\\")
     tasks = coordinator.request("GET", "/api/state")["tasks"]
     return [task for task in tasks if task.get("active") and str(task.get("cwd", "")).lower().lstrip("\\\\?\\").startswith(root)]
+
+
+def can_still_run(task):
+    if task.get("container"):
+        return False
+    return bool(task.get("active")) or not (task.get("stage") == "done" or task.get("stopped") or task.get("blocked"))
+
+
+def runnable_tasks(coordinator, workspace):
+    query = urllib.parse.quote(str(Path(workspace)))
+    return [task for task in coordinator.request("GET", f"/api/tasks?workspace={query}")["tasks"] if can_still_run(task)]
 
 
 def wait_for_idle(coordinator, workspace, pause=5):
@@ -81,13 +93,19 @@ def main():
 
     planner = launch_planner()
     if not handoff:
-        reported = False
-        while True:
-            if planner.poll() is not None and not reported:
-                progress.update(phase="planner_exited", planner_exit_code=planner.returncode)
-                save()
-                reported = True
+        while planner.poll() is None:
             time.sleep(0.2)
+        progress.update(phase="planner_exited", planner_exit_code=planner.returncode)
+        save()
+        while True:
+            try:
+                if not runnable_tasks(coordinator, workspace):
+                    progress.update(finished_at_ms=int(time.time() * 1000))
+                    save()
+                    return
+            except OSError:
+                pass
+            time.sleep(5)
     supervisor = Client(launch["url"], handoff)
     path = f'/v1/runs/{started["run"]["id"]}/handoff'
     stalls = 0
