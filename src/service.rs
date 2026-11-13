@@ -144,6 +144,32 @@ mod tests {
         assert_eq!(s.db().run(id).unwrap().status, "failed");
     }
     #[test]
+    fn tournaments_and_judged_runs_are_evaluated_by_separate_workers() {
+        let (_root, s, token, chess) = setup();
+        let game = s.route("POST", "/v1/campaigns", &token, json!({"benchmark":"game_build"})).unwrap()["campaign"]["id"].as_str().unwrap().to_owned();
+        let started = s.route("POST", "/v1/runs", &token, json!({"campaign_id":game,"agent":"game"})).unwrap();
+        let id = started["run"]["id"].as_str().unwrap().to_owned();
+        s.route("POST", &format!("/v1/runs/{id}/submissions"), started["run_token"].as_str().unwrap(),
+            json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
+        {
+            let db = s.db();
+            let mut run = db.run(&id).unwrap();
+            run.deadline_ms = now_ms() - 1;
+            db.save_run(&run).unwrap();
+            let mut c = db.campaign(&chess).unwrap();
+            c.status = "scoring_requested".into();
+            db.save_campaign(&c).unwrap();
+        }
+        s.route("POST", &format!("/v1/campaigns/{game}/close"), &token, json!({})).unwrap();
+        s.tick().unwrap();
+        s.route("POST", &format!("/v1/campaigns/{game}/score"), &token, json!({})).unwrap();
+        s.evaluate(true).unwrap();
+        assert!(s.db().judgments().unwrap().is_empty(), "the tournament worker never prepares judged runs");
+        s.evaluate(false).unwrap();
+        assert_eq!(s.db().judgments().unwrap().len(), 1);
+        assert_eq!(s.db().campaign(&chess).unwrap().status, "completed", "the tournament worker still plays chess");
+    }
+    #[test]
     fn dashboard_scores_use_six_independent_criteria() {
         let (_root, s, token, cid) = setup();
         {
@@ -654,7 +680,18 @@ impl Service {
     }
     pub fn background(self: &Arc<Self>) -> Vec<thread::JoinHandle<()>> {
         let timers = self.clone();
-        let evaluator = self.clone();
+        let judged = self.clone();
+        let tournaments = self.clone();
+        let evaluator = |service: Arc<Self>, tournaments: bool| {
+            thread::spawn(move || {
+                while !service.stopping.load(Ordering::Relaxed) {
+                    if let Err(e) = service.evaluate(tournaments) {
+                        eprintln!("evaluation worker: {e}");
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            })
+        };
         vec![
             thread::spawn(move || {
                 while !timers.stopping.load(Ordering::Relaxed) {
@@ -664,14 +701,8 @@ impl Service {
                     thread::sleep(Duration::from_millis(20));
                 }
             }),
-            thread::spawn(move || {
-                while !evaluator.stopping.load(Ordering::Relaxed) {
-                    if let Err(e) = evaluator.evaluate_next() {
-                        eprintln!("evaluation worker: {e}");
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }),
+            evaluator(judged, false),
+            evaluator(tournaments, true),
         ]
     }
     pub fn tick(&self) -> Result<()> {
@@ -819,9 +850,17 @@ impl Service {
         db.event(Some(&run.id), "prepared", &json!({"error":run.error}))?;
         Ok(run)
     }
+    #[cfg(test)]
     fn evaluate_next(&self) -> Result<()> {
+        self.evaluate(false)?;
+        self.evaluate(true)
+    }
+    fn evaluate(&self, tournaments: bool) -> Result<()> {
         let campaigns = self.db().campaigns()?;
         for c in campaigns {
+            if (c.config.benchmark == Benchmark::Chess960) != tournaments {
+                continue;
+            }
             let runs = self.db().runs(&c.id)?;
             if c.config.benchmark != Benchmark::Chess960 {
                 if c.status != "scoring_requested" {
