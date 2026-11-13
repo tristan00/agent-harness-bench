@@ -218,7 +218,7 @@ impl Service {
                     case["ml"] = json!(crate::ml::random_assignment());
                 }
                 if matches!(benchmark, Benchmark::GameBuild | Benchmark::MazeGame) {
-                    case["inspiration"] = json!(prompts::random_inspiration());
+                    case["inspiration"] = json!(prompts::random_inspiration(benchmark == Benchmark::GameBuild));
                 }
                 cases.push(case);
             }

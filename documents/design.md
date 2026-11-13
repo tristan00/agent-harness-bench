@@ -23,7 +23,7 @@ The benchmark compares agent-coordinator configurations: planner and worker mode
 | `maze_game` | 1800 s | Hidden follow-up requests arrive one at a time; a judge rates completion of each received request and overall quality |
 | `ml_predictor` | 900 s | A judge rates the EDA report; the submission's predict command runs on the official held-out test set and is compared with a precomputed reference model |
 
-Game and maze runs get three random theme words; ML runs get one of the three tasks in `ml_datasets.json` (Adult income, Optical digits, Fashion-MNIST), each with an officially separate test file that agents are never given; dashboard runs get a random dataset from `datasets.json`. Maze follow-ups come from a private file named in the batch request and are never shown to agents ahead of time.
+Game and maze runs get three random theme words, and game runs also get one to three game types drawn from the 22 in `GAME_TYPES` in `src/prompts.rs` (from economic simulation and 4X to puzzle, racing and narrative adventure); ML runs get one of the three tasks in `ml_datasets.json` (Adult income, Optical digits, Fashion-MNIST), each with an officially separate test file that agents are never given; dashboard runs get a random dataset from `datasets.json`. Maze follow-ups come from a private file named in the batch request and are never shown to agents ahead of time.
 
 ## Lifecycle
 

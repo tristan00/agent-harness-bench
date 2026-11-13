@@ -1020,7 +1020,7 @@ mod tests {
     fn start(service: &Service, cid: &str, agent: &str) -> Value {
         let db = service.db();
         let c = db.campaign(cid).unwrap();
-        let mut run = Run::new(&c, agent, (c.config.benchmark == Benchmark::GameBuild).then(prompts::random_inspiration),
+        let mut run = Run::new(&c, agent, (c.config.benchmark == Benchmark::GameBuild).then(|| prompts::random_inspiration(true)),
             (c.config.benchmark == Benchmark::DatasetDashboard).then(crate::datasets::random_assignment));
         run.ml = (c.config.benchmark == Benchmark::MlPredictor).then(crate::ml::random_assignment);
         let token = crate::id();
@@ -1060,10 +1060,12 @@ mod tests {
             let task = service.route("GET", &format!("/v1/runs/{}/task", run.id), &admin, Value::Null).unwrap();
             assert_eq!(task["inspiration"], json!(inspiration));
             assert_eq!(task["prompt"], started["prompt"]);
-            for theme in &inspiration.themes {
-                assert!(started["prompt"].as_str().unwrap().contains(theme));
-                assert!(prompts::judge(&c, &run, 0).contains(theme));
+            assert!((1..=3).contains(&inspiration.genres.len()));
+            for word in inspiration.themes.iter().chain(&inspiration.genres) {
+                assert!(started["prompt"].as_str().unwrap().contains(word.as_str()));
+                assert!(prompts::judge(&c, &run, 0).contains(word.as_str()));
             }
+            assert!(!started["prompt"].as_str().unwrap().contains("economic simulation, 4X and/or grand strategy"));
             assigned.push(run);
         }
         assert_ne!(assigned[0].inspiration.as_ref().unwrap().seed, assigned[1].inspiration.as_ref().unwrap().seed);
