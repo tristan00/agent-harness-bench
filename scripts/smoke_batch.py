@@ -62,6 +62,7 @@ def main():
                 workspaces.append({"path": str(path), "settings": settings})
             return {"profile": "fixture", "template_path": str(template), "workspace_root": str(workspace_root),
                     "workspaces": workspaces, "max_parallel": cap, "order_seed":960,
+                    "benchmarks": ["chess960", "game_build", "dataset_dashboard"],
                     "task_configs": {k: {"development_seconds": seconds} for k in ["chess960", "game_build", "dataset_dashboard"]}}
         def status(batch):
             return client.request("GET", f'/v1/benchmark-batches/{batch["id"]}')["batch"]

@@ -10,6 +10,29 @@ from harness import Client, agent_environment
 from agent_selection import coordinator_settings, detect_family, planner_command, workspace_settings
 from workspace_prompts import documents
 
+STALL_LIMIT = 3
+
+
+def next_step(exit_code, state, stalls):
+    """Decide what follows a planner exit: hand off, repeat the current request, or stop."""
+    if not state["open"]:
+        return "finished", stalls
+    if exit_code == 0 and state["submitted"]:
+        return "advance", 0
+    stalls += 1
+    return ("stop" if stalls >= STALL_LIMIT else "continue"), stalls
+
+
+def active_tasks(coordinator, workspace):
+    root = str(Path(workspace).resolve()).lower().lstrip("\\\\?\\")
+    tasks = coordinator.request("GET", "/api/state")["tasks"]
+    return [task for task in tasks if task.get("active") and str(task.get("cwd", "")).lower().lstrip("\\\\?\\").startswith(root)]
+
+
+def wait_for_idle(coordinator, workspace, pause=5):
+    while active_tasks(coordinator, workspace):
+        time.sleep(pause)
+
 
 def main():
     launch_path = Path(os.environ["HARNESS_WORKFLOW_REQUEST"])
@@ -39,20 +62,62 @@ def main():
     env["HARNESS_PLANNER_PROMPT"] = str(prompt_file)
     env["HARNESS_WORKSPACE_PLANNER"] = profile["workspace"]["planner"]
     env["AGENT_FAMILY"] = detect_family() or ""
+    handoff = started.get("handoff_token")
+    if handoff:
+        env["HARNESS_PLANNER_SESSION"] = str(root / "planner-session.json")
     progress = {"mode": "template", "phase": "running", "workspace": str(workspace),
                 "coordinator_url": coordinator.url, "run_id": started["run"]["id"]}
-    with (root / "planner.log").open("wb") as log:
-        planner = subprocess.Popen(command, cwd=workspace, env=env,
-                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **flags)
-    progress["planner_pid"] = planner.pid
-    (root / "progress.json").write_text(json.dumps(progress), encoding="utf-8")
-    reported = False
+
+    def save():
+        (root / "progress.json").write_text(json.dumps(progress), encoding="utf-8")
+
+    def launch_planner(message=None):
+        if message is not None:
+            message_file = root / f"planner-message-{len(progress.get('messages', []))}.txt"
+            message_file.write_text(message, encoding="utf-8")
+            env["HARNESS_PLANNER_MESSAGE"] = str(message_file)
+            progress.setdefault("messages", []).append({"file": str(message_file), "at_ms": int(time.time() * 1000)})
+        with (root / "planner.log").open("ab") as log:
+            planner = subprocess.Popen(command, cwd=workspace, env=env,
+                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **flags)
+        progress.update(phase="running", planner_pid=planner.pid)
+        save()
+        return planner
+
+    planner = launch_planner()
+    if not handoff:
+        reported = False
+        while True:
+            if planner.poll() is not None and not reported:
+                progress.update(phase="planner_exited", planner_exit_code=planner.returncode)
+                save()
+                reported = True
+            time.sleep(0.2)
+    supervisor = Client(launch["url"], handoff)
+    path = f'/v1/runs/{started["run"]["id"]}/handoff'
+    stalls = 0
     while True:
-        if planner.poll() is not None and not reported:
-            progress.update(phase="planner_exited", planner_exit_code=planner.returncode)
-            (root / "progress.json").write_text(json.dumps(progress), encoding="utf-8")
-            reported = True
-        time.sleep(0.2)
+        code = planner.wait()
+        progress.update(phase="waiting_for_workers", planner_exit_code=code)
+        save()
+        wait_for_idle(coordinator, workspace)
+        state = supervisor.request("POST", path, {"action": "current"})
+        action, stalls = next_step(code, state, stalls)
+        progress.update(request=state["request"], stalls=stalls, last_action=action)
+        if action == "finished":
+            break
+        if action == "stop":
+            supervisor.request("POST", path, {"action": "stop", "reason": f"{STALL_LIMIT} planner exits without a new submission"})
+            break
+        if action == "advance":
+            message = supervisor.request("POST", path, {"action": "advance"})["next"]
+            if message is None:
+                break
+        else:
+            message = state["continue"]
+        planner = launch_planner(message)
+    progress.update(phase="finished")
+    save()
 
 
 if __name__ == "__main__":

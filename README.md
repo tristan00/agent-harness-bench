@@ -37,7 +37,7 @@ The service generates `data/admin-token` and `data/judge-token` (or accepts `HAR
 | `chess960` | 600 seconds | Seeded double round robin, every entry starts at 1500 Elo, K=32 | Elo change, nonblank physical source lines, W/D/L, forfeits, full game traces |
 | `dataset_dashboard` | 900 seconds | Fresh judge explores for 300 seconds, then 120 seconds to score | Six 0–5 ratings with evidence, browser measurements, independent dataset assignment and provenance |
 | `game_build` | 1800 seconds, configurable | Judge explores for 300 seconds, service stops game, then 120 seconds to score | Five 0–5 ratings, evidence, total/mean, API latency/counts, CPU and memory samples |
-| `maze_sequence` | 5400 seconds, one deadline across six sequentially revealed stages | Deferred; records stages reached, per-stage timestamps and snapshots | Stage count and per-stage evidence; judge rubric reuses the five game criteria |
+| `maze_game` | 1800 seconds | Judge explores for 600 seconds, then 120 seconds to score | Requirement completion fractions and four 0–5 quality ratings with evidence |
 
 The game development default is an implementation choice; the requested 10-minute chess and 5-minute game exploration limits are the defaults. All time limits are campaign configuration. Theme selection uses three distinct categories from cultures, historical civilizations, periods and fields of study. The service generates a random seed unless you supply one; every builder in a campaign receives the same theme words and prompt version.
 

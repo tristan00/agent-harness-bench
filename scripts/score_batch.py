@@ -44,10 +44,13 @@ def output_lock(path):
 
 
 def validate_config(config):
+    benchmarks = {"chess960", "game_build", "dataset_dashboard"} | ({"maze_game"} if "maze_game" in config["benchmark_weights"] else set())
     groups = {"category_weights": {"result", "simplicity", "framework"},
-              "benchmark_weights": {"chess960", "game_build", "dataset_dashboard"},
+              "benchmark_weights": benchmarks,
               "framework_weights": {"task_count", "relations", "parallelism", "token_efficiency"},
               "references": {"elo_scale", "source_lines", "task_count", "relation_types", "edges_per_task", "tokens"}}
+    if "maze_game" in benchmarks:
+        groups["maze"] = {"completion_weight", "quality_weight"}
     for name, keys in groups.items():
         values = config[name]
         if set(values) != keys or any(not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0 for value in values.values()):
@@ -265,7 +268,7 @@ def score_batch(args, output, config):
     for case in deferred:
         run = client.request("GET", f'/v1/runs/{case["run_id"]}') if case.get("run_id") else {}
         unscored.append({"metrics":collect(case, run.get("run"), args.data, args.coordinator_data),
-                         "stages":run.get("stages", []),"stages_reached":len(run.get("stages", []))})
+                         "completed_requests":run.get("completed_requests", [])})
     report = {"batch_id":args.batch,"config":config,"created_at_ms":int(time.time()*1000),"cases":scored,"unscored":unscored,
               "scoring_execution":{"judge":args.judge, "max_judges":args.max_judges,
                                    "timeout_seconds":args.timeout, "implementation_sha256":implementation},

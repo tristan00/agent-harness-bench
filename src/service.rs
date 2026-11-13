@@ -23,10 +23,20 @@ use std::{
 };
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
-fn maze_stages(db: &Store, run: &str) -> Result<Vec<Value>> {
-    let mut stages: Vec<Value> = db.events(run)?.into_iter().filter(|e| e["kind"] == "stage_completed").map(|e| e["data"].clone()).collect();
-    stages.reverse();
-    Ok(stages)
+fn completed_requests(db: &Store, run: &str) -> Result<Vec<Value>> {
+    let mut completed: Vec<Value> = db.events(run)?.into_iter().filter(|e| e["kind"] == "request_completed").map(|e| e["data"].clone()).collect();
+    completed.reverse();
+    Ok(completed)
+}
+
+pub(crate) fn handoff_token(admin: &str, run: &str) -> String {
+    crate::storage::hash(&format!("{admin}:handoff:{run}"))
+}
+
+pub(crate) fn started_config(config: &Config) -> Value {
+    let mut value = serde_json::to_value(config).expect("serializable config");
+    value.as_object_mut().unwrap().remove("follow_ups");
+    value
 }
 
 struct Session {
@@ -331,45 +341,77 @@ mod tests {
         );
         assert_eq!(service.db().run(id).unwrap().status, "frozen");
     }
-    #[test]
-    fn maze_stages_reveal_instructions_in_order_and_freeze_after_the_last() {
-        let (_root, service, admin, chess) = setup();
-        let campaign = service.route("POST", "/v1/campaigns", &admin, json!({"benchmark":"maze_sequence"})).unwrap();
-        assert_eq!(campaign["campaign"]["config"]["development_seconds"], 5400);
+    fn maze_campaign(service: &Service, admin: &str) -> (String, String, String) {
+        let campaign = service.route("POST", "/v1/campaigns", admin, json!({"benchmark":"maze_game","follow_ups":["Second request.","Third request."]})).unwrap();
+        assert_eq!(campaign["campaign"]["config"]["development_seconds"], 1800);
+        assert_eq!(campaign["campaign"]["config"]["judge_seconds"], 600);
         let cid = campaign["campaign"]["id"].as_str().unwrap();
-        let start = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":cid,"agent":"maze"})).unwrap();
-        let id = start["run"]["id"].as_str().unwrap();
-        let token = start["run_token"].as_str().unwrap();
-        let task = service.route("GET", &format!("/v1/runs/{id}/task"), token, Value::Null).unwrap();
-        assert_eq!(task["stage"], 1);
-        assert_eq!(task["instructions"].as_array().unwrap().len(), 1);
-        assert!(!task["prompt"].as_str().unwrap().contains(prompts::MAZE_STAGES[1]));
-        let stages = format!("/v1/runs/{id}/stages");
-        let submit = |text: &str| service.route("POST", &format!("/v1/runs/{id}/submissions"), token,
-            json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":text}]})).unwrap();
-        assert_eq!(service.route("POST", &stages, token, json!({"stage":1})).unwrap_err().0, 409);
-        submit("print(1)");
-        assert_eq!(service.route("POST", &stages, token, json!({"stage":2})).unwrap_err().0, 409);
-        let first = service.route("POST", &stages, token, json!({"stage":1})).unwrap();
-        assert_eq!(first["stage"], 2);
-        assert_eq!(first["instruction"], prompts::MAZE_STAGES[1]);
-        assert_eq!(service.route("POST", &stages, token, json!({"stage":1})).unwrap()["replayed"], true);
-        assert_eq!(service.route("POST", &stages, token, json!({"stage":2})).unwrap_err().0, 409);
-        for stage in 2..=prompts::MAZE_STAGES.len() {
-            submit(&format!("print({stage})"));
-            let response = service.route("POST", &stages, token, json!({"stage":stage})).unwrap();
-            assert_eq!(response["completed"], stage == prompts::MAZE_STAGES.len());
+        let start = service.route("POST", "/v1/runs", admin, json!({"campaign_id":cid,"agent":"maze"})).unwrap();
+        assert!(start["config"].get("follow_ups").is_none());
+        (start["run"]["id"].as_str().unwrap().to_owned(), start["run_token"].as_str().unwrap().to_owned(), start["handoff_token"].as_str().unwrap().to_owned())
+    }
+    #[test]
+    fn maze_requests_advance_only_through_the_supervisor_handoff() {
+        let (_root, service, admin, chess) = setup();
+        let (id, token, handoff) = maze_campaign(&service, &admin);
+        let task = service.route("GET", &format!("/v1/runs/{id}/task"), &token, Value::Null).unwrap();
+        let prompt = task["prompt"].as_str().unwrap();
+        assert!(prompt.contains(prompts::MAZE_REQUEST) && !prompt.contains("Second request."));
+        for word in ["stage", "sequen", "follow", "next request", "complete it"] {
+            assert!(!prompt.to_lowercase().contains(word), "{word}");
         }
-        let task = service.route("GET", &format!("/v1/runs/{id}/task"), token, Value::Null).unwrap();
-        assert_eq!(task["completed"], true);
-        assert_eq!(task["instructions"].as_array().unwrap().len(), prompts::MAZE_STAGES.len());
+        let path = format!("/v1/runs/{id}/handoff");
+        assert_eq!(service.route("POST", &path, &token, json!({"action":"advance"})).unwrap_err().0, 401);
+        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
+        assert_eq!((current["request"].as_u64(), current["submitted"].as_bool()), (Some(1), Some(false)));
+        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
+        let submit = |text: &str| service.route("POST", &format!("/v1/runs/{id}/submissions"), &token,
+            json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":text}]})).unwrap();
+        submit("print(1)");
+        submit("print(1.5)");
+        let next = service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
+        assert_eq!(next["next"], prompts::maze_follow_up("Second request."));
+        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
+        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
+        assert_eq!(current["continue"], prompts::maze_continue("Second request."));
+        submit("print(2)");
+        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].as_str().unwrap().starts_with("Third request."));
+        submit("print(3)");
+        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].is_null());
         service.tick().unwrap();
-        let run = service.route("GET", &format!("/v1/runs/{id}"), token, Value::Null).unwrap();
+        let run = service.route("GET", &format!("/v1/runs/{id}"), &token, Value::Null).unwrap();
         assert_eq!(run["run"]["status"], "frozen");
-        assert_eq!(run["stages"].as_array().unwrap().len(), prompts::MAZE_STAGES.len());
+        assert_eq!(run["completed_requests"].as_array().unwrap().len(), 3);
+        assert!(run["completed_requests"].as_array().unwrap().iter().all(|r| r["submission_id"].is_string()));
         let other = service.route("POST", "/v1/runs", &admin, json!({"campaign_id":chess,"agent":"single"})).unwrap();
-        let path = format!("/v1/runs/{}/stages", other["run"]["id"].as_str().unwrap());
-        assert_eq!(service.route("POST", &path, other["run_token"].as_str().unwrap(), json!({"stage":1})).unwrap_err().0, 409);
+        assert!(other.get("handoff_token").is_none());
+        let other_path = format!("/v1/runs/{}/handoff", other["run"]["id"].as_str().unwrap());
+        assert_eq!(service.route("POST", &other_path, &admin, json!({"action":"current"})).unwrap_err().0, 409);
+    }
+    #[test]
+    fn maze_handoff_stop_freezes_and_judging_scores_received_requests() {
+        let (_root, service, admin, _chess) = setup();
+        let (id, token, handoff) = maze_campaign(&service, &admin);
+        let path = format!("/v1/runs/{id}/handoff");
+        service.route("POST", &format!("/v1/runs/{id}/submissions"), &token, json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":"print(1)"}]})).unwrap();
+        service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
+        service.route("POST", &path, &handoff, json!({"action":"stop","reason":"no progress"})).unwrap();
+        service.tick().unwrap();
+        assert_eq!(service.db().run(&id).unwrap().status, "frozen");
+        let db = service.db();
+        let campaign = db.campaign(&db.run(&id).unwrap().campaign_id).unwrap();
+        drop(db);
+        let judge = prompts::judge_for_run(&campaign, &service.db().run(&id).unwrap(), 1);
+        assert!(judge.contains("1. Build a simple maze game") && judge.contains("2. Second request.") && !judge.contains("Third request."));
+        let criterion = json!({"score":3,"evidence":"seen"});
+        let mut score = json!({"requests":[{"request":1,"fraction":1.0,"evidence":"works"},{"request":2,"fraction":0.5,"evidence":"half"}],
+            "interface":criterion,"efficiency":criterion,"visuals":criterion,"testability":criterion,"notes":""});
+        let parsed: MazeScore = serde_json::from_value(score.clone()).unwrap();
+        parsed.validate(2).unwrap();
+        assert_eq!((parsed.total(), parsed.progress()), (12, 1.5));
+        assert!(parsed.validate(3).is_err());
+        score["requests"][1]["fraction"] = json!(1.5);
+        assert!(serde_json::from_value::<MazeScore>(score).unwrap().validate(2).is_err());
     }
     #[test]
     fn restart_marks_active_workflow_interrupted_without_losing_completions() {
@@ -1062,7 +1104,7 @@ impl Service {
         db.save_run(&run)?;
         db.event(Some(&run.id), "judge_started", &j)?;
         Ok(
-            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge_for_run(&c, &run),"run":run,"themes":c.themes,"benchmark":c.config.benchmark}),
+            json!({"job":j,"judgment_token":claim_token,"prompt":prompts::judge_for_run(&c, &run, completed_requests(&db, &run.id)?.len()),"run":run,"themes":c.themes,"benchmark":c.config.benchmark}),
         )
     }
     fn action(&self, id: &str, token: &str, body: Value) -> ApiResult<Value> {
@@ -1150,15 +1192,6 @@ impl Service {
                 let run = db.run(id)?;
                 let campaign = db.campaign(&run.campaign_id)?;
                 let mut task = json!({"run_id":id,"benchmark":campaign.config.benchmark,"prompt":prompts::builder_for_run(&campaign, &run)});
-                if campaign.config.benchmark == Benchmark::MazeSequence {
-                    let stages = maze_stages(&db, id)?;
-                    let current = (stages.len() + 1).min(prompts::MAZE_STAGES.len());
-                    task["prompt"] = json!(prompts::maze_stage(&campaign, current));
-                    task["stage"] = json!(current);
-                    task["completed"] = json!(stages.len() >= prompts::MAZE_STAGES.len());
-                    task["instructions"] = json!(prompts::MAZE_STAGES[..current].iter().enumerate()
-                        .map(|(i, text)| json!({"stage":i + 1,"instruction":text})).collect::<Vec<_>>());
-                }
                 if let Some(dataset) = run.dataset { task["dataset"] = json!(dataset); }
                 Ok(task)
             }
@@ -1168,7 +1201,7 @@ impl Service {
             ("GET", ["v1", "benchmarks"]) => {
                 self.admin(token)?;
                 Ok(
-                    json!({"benchmarks":["chess960","game_build","dataset_dashboard","maze_sequence"],"maze_defaults":Config{benchmark:Benchmark::MazeSequence,development_seconds:5400,..Config::default()},"maze_stages":prompts::MAZE_STAGES.len(),"prompt_version":prompts::VERSION,"chess_defaults":Config::default(),"game_defaults":Config{benchmark:Benchmark::GameBuild,development_seconds:1800,..Config::default()},"dashboard_defaults":Config{benchmark:Benchmark::DatasetDashboard,development_seconds:900,..Config::default()},"datasets":crate::datasets::registry()}),
+                    json!({"benchmarks":["chess960","game_build","dataset_dashboard","maze_game"],"maze_defaults":Config{benchmark:Benchmark::MazeGame,development_seconds:1800,judge_seconds:600,..Config::default()},"prompt_version":prompts::VERSION,"chess_defaults":Config::default(),"game_defaults":Config{benchmark:Benchmark::GameBuild,development_seconds:1800,..Config::default()},"dashboard_defaults":Config{benchmark:Benchmark::DatasetDashboard,development_seconds:900,..Config::default()},"datasets":crate::datasets::registry()}),
                 )
             }
             ("POST", ["v1", "campaigns"]) => {
@@ -1182,8 +1215,11 @@ impl Service {
                 if config.benchmark == Benchmark::DatasetDashboard && body.get("development_seconds").is_none() {
                     config.development_seconds = 900;
                 }
-                if config.benchmark == Benchmark::MazeSequence && body.get("development_seconds").is_none() {
-                    config.development_seconds = 5400;
+                if config.benchmark == Benchmark::MazeGame && body.get("development_seconds").is_none() {
+                    config.development_seconds = 1800;
+                }
+                if config.benchmark == Benchmark::MazeGame && body.get("judge_seconds").is_none() {
+                    config.judge_seconds = 600;
                 }
                 if body.get("seed").is_none() {
                     config.seed = u64::from_le_bytes(
@@ -1364,56 +1400,67 @@ impl Service {
                 db.insert_run(&run, &run_token)?;
                 db.event(Some(&run.id), "started", &run)?;
                 Ok(
-                    json!({"run":run,"run_token":run_token,"prompt":prompts::builder_for_run(&c, &run),"config":c.config,"themes":c.themes,"server_time_ms":now}),
+                    {
+                        let mut started = json!({"run":run,"run_token":run_token,"prompt":prompts::builder_for_run(&c, &run),"config":started_config(&c.config),"themes":c.themes,"server_time_ms":now});
+                        if c.config.benchmark == Benchmark::MazeGame { started["handoff_token"] = json!(handoff_token(&self.admin, &run.id)); }
+                        started
+                    },
                 )
             }
             ("GET", ["v1", "runs", id]) => {
                 self.run_auth(id, token)?;
                 let db = self.db();
-                Ok(json!({"run":db.run(id)?,"report":db.report(id)?,"stages":maze_stages(&db, id)?,"server_time_ms":now_ms()}))
+                Ok(json!({"run":db.run(id)?,"report":db.report(id)?,"completed_requests":completed_requests(&db, id)?,"server_time_ms":now_ms()}))
             }
-            ("POST", ["v1", "runs", id, "stages"]) => {
-                self.run_auth(id, token)?;
+            ("POST", ["v1", "runs", id, "handoff"]) => {
+                if token != self.admin && token != handoff_token(&self.admin, id) {
+                    return Err(ApiError(401, "supervisor handoff token required".into()));
+                }
                 let db = self.db();
                 let mut run = db.run(id)?;
                 let campaign = db.campaign(&run.campaign_id)?;
-                if campaign.config.benchmark != Benchmark::MazeSequence {
-                    return Err(ApiError(409, "this benchmark has a single instruction".into()));
+                if campaign.config.benchmark != Benchmark::MazeGame {
+                    return Err(ApiError(409, "this benchmark has no follow-up requests".into()));
                 }
-                let stages = maze_stages(&db, id)?;
-                let requested = body["stage"].as_u64().filter(|n| *n > 0).ok_or_else(|| ApiError(400, "positive stage number required".into()))? as usize;
-                if let Some(saved) = stages.get(requested - 1) {
-                    return Ok(json!({"stage_completed":saved,"replayed":true}));
-                }
+                let requests = prompts::maze_requests(&campaign);
+                let completed = completed_requests(&db, id)?;
+                let current = completed.len() + 1;
+                let submitted = db.events(id)?.iter().take_while(|e| e["kind"] != "request_completed").any(|e| e["kind"] == "submitted");
                 let now = now_ms();
-                if run.status != "developing" || now >= run.deadline_ms {
-                    return Err(ApiError(409, "development deadline passed".into()));
-                }
-                let current = stages.len() + 1;
-                if requested != current || current > prompts::MAZE_STAGES.len() {
-                    return Err(ApiError(409, format!("current stage is {current}")));
-                }
-                if !db.events(id)?.iter().take_while(|e| e["kind"] != "stage_completed").any(|e| e["kind"] == "submitted") {
-                    return Err(ApiError(409, "submit this stage's final version before declaring it complete".into()));
-                }
-                let record = json!({"stage":current,"submission_id":run.submission_id,"completed_at_ms":now,"elapsed_ms":now - run.started_at_ms});
-                db.event(Some(id), "stage_completed", &record)?;
-                let next = current + 1;
-                if next > prompts::MAZE_STAGES.len() {
-                    run.deadline_ms = now;
-                    db.save_run(&run)?;
-                    drop(db);
-                    if let Some(workflow) = self.workflows.lock().unwrap().get_mut(*id) {
-                        workflow.deadline_ms = now;
-                        workflow.deadline = Instant::now();
+                let open = run.status == "developing" && now < run.deadline_ms;
+                match body["action"].as_str() {
+                    Some("current") => {
+                        let text = requests.get(current - 1).cloned();
+                        Ok(json!({"request":current,"requests":requests.len(),"submitted":submitted,"open":open,
+                            "continue":text.as_deref().map(prompts::maze_continue),"completed":completed}))
                     }
-                    return Ok(json!({"stage_completed":record,"completed":true,"instruction":null}));
+                    Some(action @ ("advance" | "stop")) => {
+                        if !open {
+                            return Err(ApiError(409, "development deadline passed".into()));
+                        }
+                        let mut next = None;
+                        if action == "advance" {
+                            if !submitted || current > requests.len() {
+                                return Err(ApiError(409, "a new accepted submission is required before handing off".into()));
+                            }
+                            db.event(Some(id), "request_completed", &json!({"request":current,"submission_id":run.submission_id,"completed_at_ms":now,"elapsed_ms":now - run.started_at_ms}))?;
+                            next = requests.get(current).map(|text| prompts::maze_follow_up(text));
+                        } else {
+                            db.event(Some(id), "handoff_stopped", &json!({"request":current,"reason":body["reason"],"at_ms":now}))?;
+                        }
+                        if next.is_none() {
+                            run.deadline_ms = now;
+                            db.save_run(&run)?;
+                            drop(db);
+                            if let Some(workflow) = self.workflows.lock().unwrap().get_mut(*id) {
+                                workflow.deadline_ms = now;
+                                workflow.deadline = Instant::now();
+                            }
+                        }
+                        Ok(json!({"next":next}))
+                    }
+                    _ => Err(ApiError(400, "action must be current, advance or stop".into())),
                 }
-                Ok(json!({"stage_completed":record,"completed":false,"stage":next,"instruction":prompts::MAZE_STAGES[next - 1],"prompt":prompts::maze_stage(&campaign, next)}))
-            }
-            ("GET", ["v1", "runs", id, "events"]) => {
-                self.run_auth(id, token)?;
-                Ok(json!({"events":self.db().events(id)?}))
             }
             ("POST", ["v1", "runs", id, kind @ ("submissions" | "iterations")]) => {
                 self.run_auth(id, token)?;
@@ -1533,7 +1580,15 @@ impl Service {
                 }
                 let mut run = db.run(&j.run_id)?;
                 let c = db.campaign(&run.campaign_id)?;
-                let (score, total, count) = if c.config.benchmark == Benchmark::DatasetDashboard {
+                let received = prompts::maze_received(&c, completed_requests(&db, &run.id)?.len());
+                let mut progress = None;
+                let (score, total, count) = if c.config.benchmark == Benchmark::MazeGame {
+                    let score: MazeScore = serde_json::from_value(body)?;
+                    score.validate(received)?;
+                    progress = Some(score.progress());
+                    let total = score.total();
+                    (serde_json::to_value(score)?, total, 4)
+                } else if c.config.benchmark == Benchmark::DatasetDashboard {
                     let score: DashboardScore = serde_json::from_value(body)?;
                     score.validate()?;
                     let total = score.total();
@@ -1550,7 +1605,11 @@ impl Service {
                     .map(|id| db.artifact(id))
                     .transpose()?;
                 let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":c.themes,"dataset":run.dataset,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
-                report[if count == 5 {"total_out_of_25"} else {"total_out_of_30"}] = json!(total);
+                report[format!("total_out_of_{}", count * 5)] = json!(total);
+                if let Some(progress) = progress {
+                    report["prompt_version"] = json!(prompts::MAZE_VERSION);
+                    report["progress"] = json!({"fraction_sum":progress,"requests_received":received,"requests_total":prompts::maze_requests(&c).len()});
+                }
                 let tx = db
                     .db
                     .unchecked_transaction()

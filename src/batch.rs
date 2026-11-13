@@ -303,7 +303,7 @@ impl Service {
             }
         }
         let id = crate::id();
-        if request.benchmarks.as_ref().is_some_and(|names| names.is_empty() || names.iter().any(|n| !["chess960", "game_build", "dataset_dashboard", "maze_sequence"].contains(&n.as_str()))) {
+        if request.benchmarks.as_ref().is_some_and(|names| names.is_empty() || names.iter().any(|n| !["chess960", "game_build", "dataset_dashboard", "maze_game"].contains(&n.as_str()))) {
             return Err("benchmarks must list supported tasks".into());
         }
         let mut campaigns = BTreeMap::new();
@@ -311,15 +311,15 @@ impl Service {
         if request
             .task_configs
             .keys()
-            .any(|k| !["chess960", "game_build", "dataset_dashboard", "maze_sequence"].contains(&k.as_str()))
+            .any(|k| !["chess960", "game_build", "dataset_dashboard", "maze_game"].contains(&k.as_str()))
         {
-            return Err("supported tasks are chess960, game_build, dataset_dashboard and maze_sequence".into());
+            return Err("supported tasks are chess960, game_build, dataset_dashboard and maze_game".into());
         }
         for (name, benchmark, seconds) in [
             ("chess960", Benchmark::Chess960, 600),
             ("game_build", Benchmark::GameBuild, 1800),
             ("dataset_dashboard", Benchmark::DatasetDashboard, 900),
-            ("maze_sequence", Benchmark::MazeSequence, 5400),
+            ("maze_game", Benchmark::MazeGame, 1800),
         ] {
             if request.benchmarks.as_ref().is_some_and(|names| !names.iter().any(|n| n == name)) {
                 continue;
@@ -331,6 +331,13 @@ impl Service {
             config["benchmark"] = json!(benchmark);
             if config.get("development_seconds").is_none() {
                 config["development_seconds"] = json!(seconds);
+            }
+            if benchmark == Benchmark::MazeGame && config.get("judge_seconds").is_none() {
+                config["judge_seconds"] = json!(600);
+            }
+            if let Some(file) = config.as_object_mut().unwrap().remove("follow_ups_file") {
+                let text = fs::read_to_string(file.as_str().ok_or("follow_ups_file must be a path")?)?;
+                config["follow_ups"] = serde_json::from_str(&text)?;
             }
             let config: Config = serde_json::from_value(config)?;
             config.validate()?;
@@ -523,7 +530,10 @@ impl Service {
         batch["cases"][index]["started_at_ms"] = json!(now);
         db.save_batch(batch)?;
         tx.commit()?;
-        let started = json!({"run":run,"run_token":token,"prompt":prompts::builder_for_run(&campaign, &run),"config":campaign.config});
+        let mut started = json!({"run":run,"run_token":token,"prompt":prompts::builder_for_run(&campaign, &run),"config":crate::service::started_config(&campaign.config)});
+        if campaign.config.benchmark == Benchmark::MazeGame {
+            started["handoff_token"] = json!(crate::service::handoff_token(&self.admin, &run.id));
+        }
         match coordinator::launch(&self.root, url, &started, profile) {
             Ok(child) => {
                 workflows.insert(run.id.clone(), child);
@@ -652,7 +662,7 @@ mod tests {
         let template = root.path().join("template.txt");
         fs::write(&template, format!("Task {{benchmark_task}} Workspace: {}",workspaces.join("{workspace_name}").display())).unwrap();
         let batch = service.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
-            "workspaces":selected,"order_seed":960})).unwrap();
+            "workspaces":selected,"order_seed":960,"task_configs":{"maze_game":{"follow_ups":["Second request."]}}})).unwrap();
         assert_eq!(batch["max_parallel"],8);
         assert_eq!(batch["order_seed"],960);
         assert_eq!(batch["cases"].as_array().unwrap().len(),64);
@@ -661,14 +671,25 @@ mod tests {
         drop(service);
         let reopened = Service::open(root.path()).unwrap();
         assert_eq!(public(&reopened.db().batch(&id).unwrap()), batch);
+        let follow_ups = root.path().join("maze-follow-ups.json");
+        fs::write(&follow_ups, json!(["Second request.", "Third request."]).to_string()).unwrap();
         let only = workspaces.join("maze-only");
         fs::create_dir(&only).unwrap();
         let mut single = selected[0].clone();
         for filename in ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"] { fs::write(only.join(filename), "Selected fixture instructions.").unwrap(); }
         single["path"] = json!(only);
         let maze = reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
-            "workspaces":[single],"benchmarks":["maze_sequence"]})).unwrap();
+            "workspaces":[single],"benchmarks":["maze_game"],"task_configs":{"maze_game":{"follow_ups_file":follow_ups}}})).unwrap();
         assert_eq!(maze["cases"].as_array().unwrap().len(),1);
-        assert_eq!(maze["cases"][0]["benchmark"],"maze_sequence");
+        assert_eq!(maze["cases"][0]["benchmark"],"maze_game");
+        let campaign = reopened.db().campaign(maze["campaigns"]["maze_game"].as_str().unwrap()).unwrap();
+        assert_eq!((campaign.config.development_seconds, campaign.config.judge_seconds, campaign.config.follow_ups.len()), (1800, 600, 2));
+        let missing = workspaces.join("maze-missing");
+        fs::create_dir(&missing).unwrap();
+        for filename in ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"] { fs::write(missing.join(filename), "Selected fixture instructions.").unwrap(); }
+        let mut unconfigured = selected[0].clone();
+        unconfigured["path"] = json!(missing);
+        assert!(reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
+            "workspaces":[unconfigured],"benchmarks":["maze_game"]})).unwrap_err().to_string().contains("follow_ups"));
     }
 }

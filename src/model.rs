@@ -7,7 +7,7 @@ pub enum Benchmark {
     Chess960,
     GameBuild,
     DatasetDashboard,
-    MazeSequence,
+    MazeGame,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +27,8 @@ pub struct Config {
     pub elo_k: f64,
     pub baselines: bool,
     pub pool_run_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub follow_ups: Vec<String>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -45,6 +47,7 @@ impl Default for Config {
             elo_k: 32.0,
             baselines: true,
             pool_run_ids: vec![],
+            follow_ups: vec![],
         }
     }
 }
@@ -69,6 +72,12 @@ impl Config {
         }
         if self.benchmark != Benchmark::Chess960 && !self.pool_run_ids.is_empty() {
             return Err("game campaigns do not use chess pools".into());
+        }
+        if (self.benchmark == Benchmark::MazeGame) == self.follow_ups.is_empty()
+            || self.follow_ups.len() > 32
+            || self.follow_ups.iter().any(|text| text.trim().is_empty() || text.len() > 4000)
+        {
+            return Err("maze_game campaigns require 1..32 nonblank follow_ups; other benchmarks take none".into());
         }
         for (name, n, max) in [
             ("development_seconds", self.development_seconds, 86400),
@@ -229,6 +238,46 @@ impl GameScore {
     pub fn total(&self) -> u16 {
         self.criteria().iter().map(|c| u16::from(c.score)).sum()
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestScore {
+    pub request: usize,
+    pub fraction: f64,
+    pub evidence: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MazeScore {
+    pub requests: Vec<RequestScore>,
+    pub interface: Criterion,
+    pub efficiency: Criterion,
+    pub visuals: Criterion,
+    pub testability: Criterion,
+    pub notes: String,
+}
+impl MazeScore {
+    pub fn criteria(&self) -> [&Criterion; 4] {
+        [&self.interface, &self.efficiency, &self.visuals, &self.testability]
+    }
+    pub fn validate(&self, received: usize) -> crate::Result<()> {
+        if self.criteria().iter().any(|c| c.score > 5 || c.evidence.trim().is_empty() || c.evidence.len() > 10000) {
+            return Err("each quality criterion requires 0..5 and evidence".into());
+        }
+        if self.requests.len() != received
+            || self.requests.iter().enumerate().any(|(i, r)| r.request != i + 1 || !(0.0..=1.0).contains(&r.fraction) || r.evidence.trim().is_empty() || r.evidence.len() > 10000)
+        {
+            return Err(format!("requests must list requests 1..{received} in order, each with a fraction in 0..1 and evidence").into());
+        }
+        if self.notes.len() > 20000 {
+            return Err("notes are limited to 20000 bytes".into());
+        }
+        Ok(())
+    }
+    pub fn total(&self) -> u16 { self.criteria().iter().map(|c| u16::from(c.score)).sum() }
+    pub fn progress(&self) -> f64 { self.requests.iter().map(|r| r.fraction).sum() }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

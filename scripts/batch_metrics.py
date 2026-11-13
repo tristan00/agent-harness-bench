@@ -187,7 +187,10 @@ def score(metrics, report, config, token_mode):
     relations = 100 * (graph["connectivity"] + relation_types / (relation_types + refs["relation_types"]) + richness / (richness + refs["edges_per_task"])) / 3
     concurrency = parallel["effective_parallelism"]
     parallelism = 50 * (parallel["parallel_fraction"] + (1 - 1 / concurrency if concurrency else 0))
-    token_cost = (tokens["recorded_total"] / refs["tokens"] if token_mode == "measured_tokens" else tokens["proxy_agent_seconds"] / tokens["development_seconds"]) if n else 0
+    maze = metrics["benchmark"] == "maze_game"
+    completed = report["progress"]["fraction_sum"] if maze and report else 0
+    per_request = max(completed, 1) if maze else 1
+    token_cost = (tokens["recorded_total"] / refs["tokens"] if token_mode == "measured_tokens" else tokens["proxy_agent_seconds"] / tokens["development_seconds"]) / per_request if n else 0
     parts = {"task_count":100*n/(n+refs["task_count"]), "relations":relations, "parallelism":parallelism,
              "token_efficiency":100/(1+token_cost) if n else 0}
     artifact = metrics["artifact"]
@@ -195,16 +198,22 @@ def score(metrics, report, config, token_mode):
         result = config["missing_submission"]["result"]
         simplicity = config["missing_submission"]["simplicity"]
     else:
-        simplicity = 100 / (1 + metrics["source_lines"] / refs["source_lines"])
+        simplicity = 100 / (1 + metrics["source_lines"] / per_request / refs["source_lines"])
         if report is None:
             raise ValueError(f'Missing quality report for {metrics["run_id"]}')
         if metrics["benchmark"] == "chess960":
             delta = report["metrics"]["elo_change"]
             result = 100 / (1 + 10 ** (-delta / refs["elo_scale"]))
+        elif maze:
+            weights = config["maze"]
+            completion = completed / report["progress"]["requests_total"]
+            quality = report["mean_out_of_5"] / 5
+            result = 100 * (weights["completion_weight"] * completion + weights["quality_weight"] * quality) / (weights["completion_weight"] + weights["quality_weight"])
         else:
             result = 20 * report["mean_out_of_5"]
     categories = {"result":result, "simplicity":simplicity, "framework":weighted(parts, config["framework_weights"])}
-    return {**metrics, "quality_report":report, "token_scoring_mode":token_mode, "framework_components":parts,
+    normalization = {"requests_completed": completed, "divisor": per_request} if maze else None
+    return {**metrics, "quality_report":report, "token_scoring_mode":token_mode, "framework_components":parts, "per_request_normalization":normalization,
             "categories":categories, "score":weighted(categories, config["category_weights"]),
             "status":"scored" if artifact else "no_submission"}
 
@@ -218,7 +227,7 @@ def aggregate(cases, config):
     rows = []
     for workspace, benchmarks in grouped.items():
         if set(benchmarks) != set(config["benchmark_weights"]):
-            raise ValueError("all three benchmark results are required")
+            raise ValueError("every weighted benchmark result is required for each workspace")
         rows.append({"workspace":workspace, "score":weighted({key:value["score"] for key,value in benchmarks.items()},config["benchmark_weights"]),
                      "benchmarks":{key:value["score"] for key,value in benchmarks.items()}})
     return sorted(rows, key=lambda row: (-row["score"], row["workspace"]))

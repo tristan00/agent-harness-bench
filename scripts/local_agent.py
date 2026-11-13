@@ -64,8 +64,15 @@ def chat(endpoint, body):
         return json.load(response)
 
 
-def main(endpoint, model, prompt, cwd, steps, emit, send=chat, execute=run_tool):
-    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": f"{prompt}\nWorking directory: {cwd}"}]
+def main(endpoint, model, prompt, cwd, steps, emit, send=chat, execute=run_tool, session=None, resume=False):
+    if resume and session and Path(session).exists():
+        messages = json.loads(Path(session).read_text(encoding="utf-8")) + [{"role": "user", "content": prompt}]
+    else:
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": f"{prompt}\nWorking directory: {cwd}"}]
+
+    def keep():
+        if session:
+            Path(session).write_text(json.dumps(messages), encoding="utf-8")
     usage = {"input_tokens": 0, "output_tokens": 0, "turns": 0}
     for _ in range(steps):
         reply = send(endpoint, {"model": model, "messages": messages, "temperature": 0.2, "response_format": {"type": "json_object"}})
@@ -77,10 +84,12 @@ def main(endpoint, model, prompt, cwd, steps, emit, send=chat, execute=run_tool)
         messages.append({"role": "assistant", "content": content})
         call = parse(content)
         if call and "final" in call:
+            keep()
             emit({"type": "result", "final": call["final"], "usage": usage})
             return 0
         observation = execute(call, cwd) if call else "error: reply with one JSON object"
         messages.append({"role": "user", "content": f"Tool result:\n{observation}"})
+        keep()
     emit({"type": "result", "error": f"no final answer within {steps} turns", "usage": usage})
     return 1
 
@@ -89,5 +98,7 @@ if __name__ == "__main__":
     def emit(event):
         sys.stdout.write(json.dumps(event) + "\n")
         sys.stdout.flush()
-    raise SystemExit(main(sys.argv[1], sys.argv[2], sys.stdin.buffer.read().decode("utf-8"), os.getcwd(),
-                          int(os.environ.get("HARNESS_LOCAL_STEPS", "200")), emit))
+    arguments = sys.argv[1:]
+    session = arguments[arguments.index("--session") + 1] if "--session" in arguments else None
+    raise SystemExit(main(arguments[0], arguments[1], sys.stdin.buffer.read().decode("utf-8"), os.getcwd(),
+                          int(os.environ.get("HARNESS_LOCAL_STEPS", "200")), emit, session=session, resume="--resume" in arguments))
