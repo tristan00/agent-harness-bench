@@ -31,7 +31,6 @@ if (!$SkipBuild) {
     try { & (Join-Path $PSScriptRoot 'cargo-windows.ps1') build --release --locked } finally { Pop-Location }
     if ($LASTEXITCODE) { throw 'Benchmark build failed' }
 }
-$coordinator = Join-Path $coordinatorBuild 'release\agent-coordinator.exe'
 $profileFile = Join-Path $DataDirectory 'coordinator-profiles.json'
 if (!(Test-Path -LiteralPath $profileFile)) {
     $profiles = @{default=@{
@@ -41,13 +40,5 @@ if (!(Test-Path -LiteralPath $profileFile)) {
         session_planner_command=@($python, (Join-Path $PSScriptRoot 'template_planner.py'))
     }} | ConvertTo-Json -Depth 8
     [IO.File]::WriteAllText($profileFile, $profiles, [Text.UTF8Encoding]::new($false))
-}
-$profiles = Get-Content -Raw -LiteralPath $profileFile | ConvertFrom-Json -AsHashtable
-if ($profiles.ContainsKey('default')) {
-    if (!$profiles.default.ContainsKey('workspace')) { $profiles.default.workspace = @{} }
-    if (!$profiles.default.ContainsKey('coordinator_url')) { $profiles.default.coordinator_url = 'http://127.0.0.1:4242' }
-    if (!$profiles.default.ContainsKey('session_command')) { $profiles.default.session_command = @($python, (Join-Path $PSScriptRoot 'template_session.py')) }
-    if (!$profiles.default.ContainsKey('session_planner_command')) { $profiles.default.session_planner_command = @($python, (Join-Path $PSScriptRoot 'template_planner.py')) }
-    [IO.File]::WriteAllText($profileFile, ($profiles | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 }
 & (Join-Path $PSScriptRoot 'start.ps1') -SkipBuild -Bind $Bind -DataDirectory $DataDirectory -Binary (Join-Path $benchmarkBuild 'release\harness-bench.exe')
