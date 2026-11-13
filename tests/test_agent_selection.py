@@ -43,7 +43,7 @@ class AgentSelection(unittest.TestCase):
         try:
             settings = {"planner": "sol_6_1_light", "worker": "not validated here"}
             self.assertIs(selection.workspace_settings(settings), settings)
-            for planner in ("luna_6_high", "local_qwen3_4b", "claude_haiku_5_5_low", None):
+            for planner in ("luna_6_high", "claude_haiku_5_5_low", None):
                 with self.assertRaises(ValueError):
                     selection.workspace_settings({"planner": planner, "worker": "sol_6_1_light"})
             self.assertEqual(selection.command_arguments("sol_6_1_light"), ["--model", "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"'])

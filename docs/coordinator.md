@@ -35,7 +35,7 @@ python scripts/harness.py --token-file $token status $r.run.id
 
 Use `create game_build` for the other benchmark. Pass `create --config campaign.json` to set time limits and evaluation settings. Development time starts at enrollment and includes startup, planning, implementation, review and upload. The start call returns immediately; the service owns the work even if the launching terminal exits. Setup preserves an existing profiles file. Stop with `scripts/stop.ps1 -DataDirectory ../runtime/benchmark-service`; restart with `setup-coordinator.ps1 -SkipBuild`.
 
-Chess scores only after an explicit `harness.py score CAMPAIGN_ID` request and after development ends. Closing enrollment alone does not score. Games remain frozen until an explicit `harness.py score CAMPAIGN_ID` request; they then await a separate judge claim. Waiting spends no exploration allowance. Use the existing `judge-worker` command with a Codex or local model agent equipped with browser/desktop tools. No subjective score is fabricated by this workflow.
+Chess scores only after an explicit `harness.py score CAMPAIGN_ID` request and after development ends. Closing enrollment alone does not score. Games remain frozen until an explicit `harness.py score CAMPAIGN_ID` request; they then await a separate judge claim. Waiting spends no exploration allowance. Use the existing `judge-worker` command with a Codex agent equipped with browser/desktop tools. No subjective score is fabricated by this workflow.
 
 ## Replaceable agents
 
@@ -47,7 +47,7 @@ Chess scores only after an explicit `harness.py score CAMPAIGN_ID` request and a
 | `coordinator_command` | Absolute coordinator executable argv |
 | `planner_command` | Any executable implementing the planner file contract |
 | `workers.implementation`, `.review`, `.replan` | Commands implementing the coordinator worker protocol |
-| `env` | Adapter environment, e.g. `CODEX_BIN` or local model configuration |
+| `env` | Adapter environment, e.g. `CODEX_BIN` |
 | `capabilities` | Worker capabilities, e.g. `process`, `network`, `browser` |
 | `workspace` | Coordinator workspace settings for the run workspace, e.g. `{"updates":"events"}` to wait on coordinator events instead of polling |
 | `prompt_workspace` | Existing workspace created with selected instruction documents; the legacy adapter verifies and copies them into its run workspace |

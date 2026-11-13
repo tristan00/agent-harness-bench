@@ -619,7 +619,7 @@ mod tests {
             assert!(allowed_agents(&json!({"planner":planner,"worker":"anything the coordinator accepts"})));
             assert!(allowed_agents(&json!({"planner":planner})));
         }
-        for invalid in [Value::Null, json!("sol_light"), json!("luna_6_high"), json!("local_qwen3_4b"), json!("claude_haiku_5_5_low")] {
+        for invalid in [Value::Null, json!("sol_light"), json!("luna_6_high"), json!("claude_haiku_5_5_low")] {
             assert!(!allowed_agents(&json!({"planner":invalid,"worker":"sol_6_1_light"})));
         }
     }

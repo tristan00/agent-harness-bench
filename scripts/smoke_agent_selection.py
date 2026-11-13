@@ -37,7 +37,7 @@ def main():
                 if label=='legacy planner':assert 'Selected project_planner fixture' in actual_prompt
             assert expand_command(['agent','--model','{model}','--effort','{effort}'],selection)==['agent','--model',model,'--effort',effort]
             print(f'{selection}: both planner adapters explicitly use {model} / {effort}')
-        for selection in [None,'sol_light','luna_6_high','local_qwen3_4b','claude_haiku_5_5_low','astra_xhigh']:
+        for selection in [None,'sol_light','luna_6_high','claude_haiku_5_5_low','astra_xhigh']:
             try:
                 workspace_settings({'planner':selection,'worker':'sol_6_1_light'})
                 raise AssertionError('invalid candidate accepted')
