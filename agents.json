@@ -1,0 +1,12 @@
+{
+  "sol_light": {"provider": "openai", "harness": "codex", "model": "gpt-6-sol", "effort": "low", "retired": true},
+  "luna_6_high": {"provider": "openai", "harness": "codex", "model": "gpt-6-luna", "effort": "high"},
+  "sol_6_1_light": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "low"},
+  "sol_6_1_medium": {"provider": "openai", "harness": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
+  "claude_haiku_5_5_low": {"provider": "anthropic", "harness": "claude_code", "model": "claude-haiku-5-5", "effort": "low"},
+  "claude_sonnet_5_5_low": {"provider": "anthropic", "harness": "claude_code", "model": "claude-sonnet-5-5", "effort": "low"},
+  "claude_sonnet_5_5_medium": {"provider": "anthropic", "harness": "claude_code", "model": "claude-sonnet-5-5", "effort": "medium"},
+  "claude_opus_5_5_medium": {"provider": "anthropic", "harness": "claude_code", "model": "claude-opus-5-5", "effort": "medium"},
+  "local_qwen3_4b": {"provider": "local", "harness": "openai_compatible", "model": "qwen3-4b-2507-fp8", "endpoint": "http://127.0.0.1:8120/v1"},
+  "local_qwen3_8b": {"provider": "local", "harness": "openai_compatible", "model": "qwen3-8b-fp8", "endpoint": "http://127.0.0.1:8120/v1"}
+}

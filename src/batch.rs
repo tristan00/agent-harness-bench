@@ -21,7 +21,7 @@ fn empty_object() -> Value {
 }
 
 pub(crate) fn allowed_agents(settings: &Value) -> bool {
-    ["planner", "worker"].iter().all(|role| matches!(settings[role].as_str(), Some("luna_6_high" | "sol_6_1_light" | "sol_6_1_medium")))
+    ["planner", "worker"].iter().all(|role| settings[role].as_str().is_some_and(|id| crate::agents::allowed(id, crate::agents::family())))
 }
 
 #[derive(Deserialize)]
@@ -266,7 +266,7 @@ impl Service {
         for workspace in &request.workspaces {
             if !allowed_agents(&workspace.settings) {
                 return Err(
-                    "workspace planner and worker must each select luna_6_high, sol_6_1_light or sol_6_1_medium".into(),
+                    format!("workspace planner and worker must each select an agent from agents.json allowed for the {} launcher family", crate::agents::family().unwrap_or("undetected")).into(),
                 );
             }
             let path = fs::canonicalize(&workspace.path)?;
@@ -594,13 +594,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn batch_agents_allow_only_the_three_explicit_candidates() {
+    fn batch_agents_must_be_catalogued_and_allowed_for_the_launcher_family() {
         for planner in ["luna_6_high", "sol_6_1_light", "sol_6_1_medium"] {
             for worker in ["luna_6_high", "sol_6_1_light", "sol_6_1_medium"] {
                 assert!(allowed_agents(&json!({"planner":planner,"worker":worker})));
             }
         }
-        for invalid in [Value::Null, json!("sol_light"), json!("astra_xhigh")] {
+        assert!(allowed_agents(&json!({"planner":"local_qwen3_4b","worker":"sol_6_1_light"})));
+        for invalid in [Value::Null, json!("sol_light"), json!("astra_xhigh"), json!("claude_haiku_5_5_low")] {
             assert!(!allowed_agents(&json!({"planner":invalid,"worker":"sol_6_1_light"})));
             assert!(!allowed_agents(&json!({"planner":"sol_6_1_light","worker":invalid})));
         }

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import time
 
-from agent_selection import command_arguments, model_effort
+from agent_selection import claude_arguments, claude_environment, command_arguments, model_effort, resolve
 from batch_metrics import aggregate, collect, read, score
 from harness import ApiError, Client, agent_environment, spawn_agent, stop_agent, write_json
 
@@ -60,9 +60,16 @@ def validate_config(config):
 def judge_command(selection, prompt_path, output_path, browser_version):
     browser_args = ["-y", f"@playwright/mcp@{browser_version}", "--isolated", "--headless", "--browser", "chrome",
                     "--output-dir", str(prompt_path.parent / "browser")]
+    agent = resolve(selection, retired=True)
+    if agent["harness"] == "claude_code":
+        servers = {"mcpServers": {"playwright": {"command": "npx", "args": browser_args}}}
+        return [*claude_arguments(agent), "--strict-mcp-config", "--mcp-config", json.dumps(servers),
+                prompt_path.read_text(encoding="utf-8")]
+    if agent["harness"] != "codex":
+        raise ValueError(f"Judge {selection} needs a browser-capable harness")
     return [os.environ.get("CODEX_BIN", "codex"), "exec", "--ephemeral", "--skip-git-repo-check", "--json",
             "--sandbox", "danger-full-access", "-c", 'approval_policy="never"', "--disable", "memories",
-            *command_arguments(selection), "-c", "mcp_servers.chrome-devtools.enabled=false",
+            *command_arguments(selection, retired=True), "-c", "mcp_servers.chrome-devtools.enabled=false",
             "-c", 'mcp_servers.playwright.command="npx"', "-c", "mcp_servers.playwright.enabled=true",
             "-c", "mcp_servers.playwright.args=" + json.dumps(browser_args),
             "--output-last-message", str(output_path), prompt_path.read_text(encoding="utf-8")]
@@ -123,6 +130,8 @@ def review_case(args, case, client, output, config):
                "artifact_id":state["run"]["submission_id"], "fresh_session":True, "browser_isolated":True})
     env = agent_environment(HARNESS_JUDGMENT_TOKEN=claimed["judgment_token"], HARNESS_URL=args.url)
     env.pop("CODEX_WINDOWS_REGISTERED_CORE", None)
+    if resolve(args.judge, retired=True)["harness"] == "claude_code":
+        env = claude_environment(env)
     process = None
     try:
         with (directory / "agent.jsonl").open("wb") as log:

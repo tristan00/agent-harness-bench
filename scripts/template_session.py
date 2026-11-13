@@ -7,7 +7,7 @@ import subprocess
 import time
 
 from harness import Client, agent_environment
-from agent_selection import planner_command, workspace_settings
+from agent_selection import agent_definitions, detect_family, planner_command, workspace_settings
 from workspace_prompts import documents
 
 
@@ -25,7 +25,8 @@ def main():
     prompt_file.write_bytes(profile["template_prompt"].encode("utf-8"))
     coordinator = Client(profile["coordinator_url"])
     coordinator.request("POST", "/api/benchmark-runs", {
-        "workspace": str(workspace), "group": profile["workspace_group"], "settings": profile["workspace"],
+        "workspace": str(workspace), "group": profile["workspace_group"],
+        "settings": {**profile["workspace"], "agents": agent_definitions(settings)},
         "run_id": started["run"]["id"], "deadline_ms": started["run"]["deadline_ms"],
     })
     env = agent_environment(**profile.get("env", {}))
@@ -37,6 +38,7 @@ def main():
     flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     env["HARNESS_PLANNER_PROMPT"] = str(prompt_file)
     env["HARNESS_WORKSPACE_PLANNER"] = profile["workspace"]["planner"]
+    env["AGENT_FAMILY"] = detect_family() or ""
     progress = {"mode": "template", "phase": "running", "workspace": str(workspace),
                 "coordinator_url": coordinator.url, "run_id": started["run"]["id"]}
     with (root / "planner.log").open("wb") as log:

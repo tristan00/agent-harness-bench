@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod artifacts;
 pub mod batch;
 pub mod chess;

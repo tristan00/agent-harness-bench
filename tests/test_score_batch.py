@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ["AGENT_FAMILY"] = "codex"
 from score_batch import judge_command, output_lock, review_case, validate_config
 
 CONFIG = json.loads((Path(__file__).resolve().parents[1] / "scoring-v1.json").read_text())

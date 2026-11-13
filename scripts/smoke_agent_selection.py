@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 
-from agent_selection import WORKSPACE_CANDIDATES, expand_command, workspace_settings
+from agent_selection import CATALOG, WORKSPACE_CANDIDATES, expand_command, workspace_settings
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests'))
 from prompt_fixture import selected_documents
 
@@ -21,7 +21,7 @@ def main():
         capture, result, request, prompt = [root / name for name in ['argv.json','result.json','request.json','prompt.txt']]
         prompt.write_text('Unchanged prompt')
         (root / 'exec').write_text("import json,os,sys,pathlib\npathlib.Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))\nif '--output-last-message' in sys.argv: pathlib.Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('{}')\npathlib.Path(os.environ['CAPTURE']+'.prompt').write_text(sys.stdin.read())\n")
-        env = {**os.environ, 'CODEX_BIN':sys.executable, 'CAPTURE':str(capture),
+        env = {**os.environ, 'AGENT_FAMILY':'codex', 'CODEX_BIN':sys.executable, 'CAPTURE':str(capture),
                'HARNESS_CODEX_ARGS':'["--model","gpt-6-astra","-c","model_reasoning_effort=\\\"xhigh\\\""]',
                'HARNESS_PLANNER_PROMPT':str(prompt), 'HARNESS_PLANNER_REQUEST':str(request),
                'HARNESS_PLANNER_RESULT':str(result), 'COORDINATOR_REQUEST':str(request), 'COORDINATOR_RESULT':str(result)}
@@ -31,7 +31,7 @@ def main():
             commands=[([sys.executable,str(scripts/'template_planner.py')],{},'template planner'),
                       ([sys.executable,str(scripts/'codex_planner.py')],{'workspace':str(root),'workspace_settings':settings},'legacy planner')]
             for stage in ['implementation','review','replan']:
-                commands.append(([str(args.coordinator.resolve()),'--codex'],{'stage':stage,'worker':selection,
+                commands.append(([str(args.coordinator.resolve()),'--codex'],{'stage':stage,'worker':selection,'agent':CATALOG[selection],'family':'codex',
                     'workerProtocol':{'text':'Selected worker instructions.'},'task':{'model':'gpt-6-astra','effort':'xhigh','cwd':str(root)},
                     'scratch':str(root),'readOnly':stage!='implementation'},stage))
             for command,payload,label in commands:

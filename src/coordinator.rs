@@ -96,6 +96,7 @@ pub fn launch(root: &Path, url: &str, started: &Value, profile: &Value) -> Resul
         .env_remove("HARNESS_RUN_TOKEN")
         .env_remove("HARNESS_JUDGMENT_TOKEN")
         .env("HARNESS_WORKFLOW_REQUEST", &launch_file)
+        .env("AGENT_FAMILY", crate::agents::family().unwrap_or(""))
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
