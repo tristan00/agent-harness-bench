@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from pathlib import Path
 
 CATALOG = json.loads((Path(__file__).resolve().parents[1] / "agents.json").read_text(encoding="utf-8"))
@@ -77,8 +78,17 @@ def claude_environment(env):
     return {key: value for key, value in env.items() if not hosted_claude_variable(key)}
 
 
+def claude_executable(found=None):
+    found = found or shutil.which("claude")
+    if found and Path(found).suffix.lower() == ".cmd":
+        native = Path(found).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+        if native.is_file():
+            return str(native)
+    return found or "claude"
+
+
 def claude_arguments(agent, read_only=False):
-    argv = [os.environ.get("CLAUDE_BIN", "claude"), "-p", "--model", agent["model"], "--output-format", "stream-json", "--verbose",
+    argv = [os.environ.get("CLAUDE_BIN") or claude_executable(), "-p", "--model", agent["model"], "--output-format", "stream-json", "--verbose",
             "--no-session-persistence", "--dangerously-skip-permissions"]
     if agent.get("effort"):
         argv += ["--effort", agent["effort"]]

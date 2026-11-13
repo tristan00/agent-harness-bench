@@ -96,3 +96,7 @@ python scripts/smoke_coordinator.py --binary PATH/TO/harness-bench.exe --coordin
 ```
 
 The smoke test runs both real services, accepts two reviewed iterations per benchmark, interrupts an unfinished third iteration, checks descendant termination and late rejection, scores chess after cutoff, leaves the game for a later judge, and verifies persistence. Deterministic fixtures test workflow correctness, not model ability or game quality.
+
+## Agents and launcher families
+
+`agents.json` lists every selectable planner, worker and judge: provider (`openai`, `anthropic`, `local`), harness (`codex`, `claude_code`, `openai_compatible`), model, optional effort and, for local models, a loopback OpenAI-compatible endpoint. Hosted models only run in their own vendor's harness. The family that started the service decides which hosted models are enabled: Claude Code enables only Anthropic agents, Codex only OpenAI agents, and local agents are always enabled. Detection uses the launching tool's environment (`CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` or Codex session variables); set `AGENT_FAMILY=claude|codex` when starting from a plain terminal. The service passes `AGENT_FAMILY` to every planner it launches and sends the selected planner and worker definitions to the coordinator with each run registration. Local entries default to the vLLM server started by `D:\local_annotator` (`python -m local_annotator.serve qwen3-4b-2507-fp8 8120 0.80 SECONDS`), served at `http://127.0.0.1:8120/v1`; any OpenAI-compatible server works.

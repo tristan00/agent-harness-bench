@@ -63,6 +63,17 @@ class AgentSelection(unittest.TestCase):
         self.assertIn("--disallowedTools", argv)
 
 
+    def test_npm_shim_resolves_to_native_claude_executable(self):
+        with tempfile.TemporaryDirectory() as root:
+            shim = Path(root, "claude.cmd")
+            shim.write_text("")
+            self.assertEqual(selection.claude_executable(str(shim)), str(shim))
+            native = Path(root, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+            native.parent.mkdir(parents=True)
+            native.write_text("")
+            self.assertEqual(selection.claude_executable(str(shim)), str(native))
+
+
 class LocalAgent(unittest.TestCase):
     def test_loop_runs_tools_until_final_and_counts_usage(self):
         replies = iter(['{"tool":"write_file","args":{"path":"a.txt","content":"hi"}}', "not json",
