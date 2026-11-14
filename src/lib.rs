@@ -2,12 +2,15 @@ pub mod agents;
 pub mod artifacts;
 pub mod batch;
 pub mod chess;
+pub mod cli;
 pub mod coordinator;
 pub mod datasets;
 pub mod engine {
     pub use bench_tooling::engine::*;
 }
+pub mod metrics;
 pub mod ml;
+pub mod ml_eval;
 pub mod model;
 pub mod process;
 pub mod prompts;
@@ -41,33 +44,4 @@ pub fn random(state: &mut u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
     z ^ (z >> 31)
-}
-
-#[cfg(test)]
-pub mod test_support {
-    pub struct TestDir(std::path::PathBuf);
-    impl TestDir {
-        pub fn path(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            if self.0.parent() == Some(std::env::temp_dir().as_path())
-                && self
-                    .0
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("harness-test-")
-            {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-    }
-    pub fn dir() -> TestDir {
-        let path = std::env::temp_dir().join(format!("harness-test-{}", crate::id()));
-        std::fs::create_dir(&path).unwrap();
-        TestDir(path)
-    }
 }

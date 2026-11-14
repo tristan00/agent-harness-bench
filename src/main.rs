@@ -16,13 +16,14 @@ fn main() {
 }
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("baseline") {
-        return baseline(args.get(2).map(String::as_str).unwrap_or("random"));
+    match args.get(1).map(String::as_str) {
+        Some("baseline") => return baseline(args.get(2).map(String::as_str).unwrap_or("random")),
+        Some("batch") => return agent_harness_bench::cli::batch(&args[2..]),
+        Some("service") => return agent_harness_bench::cli::service(&args[2..]),
+        _ => {}
     }
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!(
-            "harness-bench serve [--bind 127.0.0.1:8741] [--data data]\nLocal Rust benchmark evaluator. Admin/judge tokens are generated in the data directory.\nSubmit batches with POST /v1/benchmark-batches using the admin token."
-        );
+        println!("{}", agent_harness_bench::cli::USAGE);
         return Ok(());
     }
     let mut bind = "127.0.0.1:8741".to_owned();

@@ -11,12 +11,14 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22"
 bench-tooling = { git = "https://github.com/tristan00/bench_tooling", branch = "main" }
+flate2 = "1"
 fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
 shakmaty = "=0.30.2"
 tiny_http = "0.12"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]

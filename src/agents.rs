@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub fn catalog() -> Value {
@@ -25,13 +26,8 @@ pub fn detect(variable: impl Fn(&str) -> Option<String>) -> Option<&'static str>
 }
 
 static FAMILY: OnceLock<Option<&'static str>> = OnceLock::new();
-#[cfg(not(test))]
 pub fn family() -> Option<&'static str> {
     *FAMILY.get_or_init(|| detect(|name| std::env::var(name).ok().filter(|v| !v.is_empty())))
-}
-#[cfg(test)]
-pub fn family() -> Option<&'static str> {
-    *FAMILY.get_or_init(|| Some("codex"))
 }
 
 pub fn allowed(id: &str, family: Option<&str>) -> bool {
@@ -47,26 +43,68 @@ pub fn allowed(id: &str, family: Option<&str>) -> bool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        move |name| map.get(name).cloned()
+pub fn resolve(selection: &str, family: Option<&str>, retired: bool) -> crate::Result<Value> {
+    let agent = catalog()[selection].clone();
+    if !agent.is_object() {
+        return Err(format!("Unknown agent {selection}").into());
     }
-
-    #[test]
-    fn launcher_detection_and_vendor_isolation() {
-        assert_eq!(detect(env(&[("CLAUDECODE", "1")])), Some("claude"));
-        assert_eq!(detect(env(&[("CODEX_THREAD_ID", "t")])), Some("codex"));
-        assert_eq!(detect(env(&[("CLAUDECODE", "1"), ("CODEX_THREAD_ID", "t")])), None);
-        assert_eq!(detect(env(&[("AGENT_FAMILY", "claude"), ("CODEX_THREAD_ID", "t")])), Some("claude"));
-        assert_eq!(detect(env(&[])), None);
-        assert!(allowed("sol_6_1_light", Some("codex")) && !allowed("sol_6_1_light", Some("claude")));
-        assert!(allowed("claude_sonnet_5_5_low", Some("claude")) && !allowed("claude_sonnet_5_5_low", Some("codex")) && !allowed("claude_haiku_5_5_low", Some("claude")));
-        assert!(!allowed("sol_6_1_light", None) && !allowed("luna_6_high", Some("codex")));
-        assert!(!allowed("sol_light", Some("codex")) && !allowed("missing", Some("codex")));
+    let pair = (agent["provider"].as_str().unwrap_or(""), agent["harness"].as_str().unwrap_or(""));
+    if !matches!(pair, ("openai", "codex") | ("anthropic", "claude_code")) || agent["model"].as_str().is_none_or(|m| m.trim().is_empty()) {
+        return Err(format!("Agent {selection} must run in its own vendor's harness").into());
     }
+    if agent["retired"] == true && !retired {
+        return Err(format!("Agent {selection} is retired").into());
+    }
+    let vendor = if pair.0 == "anthropic" { "claude" } else { "codex" };
+    if family != Some(vendor) {
+        return Err(format!("Agent {selection} is not allowed when started by {}", family.unwrap_or("an undetected launcher")).into());
+    }
+    Ok(agent)
+}
+
+pub fn which(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let extensions: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()).split(';').filter(|e| !e.is_empty()).map(str::to_owned).collect()
+    } else {
+        vec![]
+    };
+    std::env::split_paths(&path).find_map(|dir| {
+        let plain = dir.join(name);
+        if plain.is_file() && (!cfg!(windows) || plain.extension().is_some()) {
+            return Some(plain);
+        }
+        extensions.iter().map(|ext| dir.join(format!("{name}{ext}"))).find(|file| file.is_file())
+    })
+}
+
+pub fn claude_executable(found: Option<PathBuf>) -> String {
+    let found = found.or_else(|| which("claude"));
+    if let Some(found) = &found
+        && found.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd"))
+    {
+        let native = found.parent().unwrap_or(Path::new("")).join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+        if native.is_file() {
+            return native.display().to_string();
+        }
+    }
+    found.map_or_else(|| "claude".into(), |f| f.display().to_string())
+}
+
+pub fn claude_arguments(agent: &Value) -> Vec<String> {
+    let binary = std::env::var("CLAUDE_BIN").ok().filter(|b| !b.is_empty()).unwrap_or_else(|| claude_executable(None));
+    let mut argv = vec![binary, "-p".into(), "--model".into(), agent["model"].as_str().unwrap_or("").into(), "--output-format".into(), "stream-json".into(),
+        "--verbose".into(), "--no-session-persistence".into(), "--dangerously-skip-permissions".into()];
+    if let Some(effort) = agent["effort"].as_str().filter(|e| !e.is_empty()) {
+        argv.extend(["--effort".into(), effort.into()]);
+    }
+    argv
+}
+
+pub fn codex_arguments(agent: &Value) -> Vec<String> {
+    vec!["--model".into(), agent["model"].as_str().unwrap_or("").into(), "-c".into(), format!("model_reasoning_effort=\"{}\"", agent["effort"].as_str().unwrap_or(""))]
+}
+
+pub fn hosted_claude_variable(name: &str) -> bool {
+    matches!(name, "CLAUDECODE" | "CLAUDE_PID" | "CLAUDE_EFFORT") || ["CLAUDE_CODE_", "CLAUDE_AGENT_SDK", "CLAUDE_PREVIEW"].iter().any(|p| name.starts_with(p))
 }

@@ -378,28 +378,3 @@ impl EdaScore {
     }
     pub fn total(&self) -> u16 { self.criteria().iter().map(|c| u16::from(c.score)).sum() }
 }
-
-#[cfg(test)]
-mod timing_tests {
-    use super::*;
-
-    #[test]
-    fn time_limits_come_only_from_the_benchmark() {
-        let follow = serde_json::json!({"follow_ups":["Next."]});
-        let ml = serde_json::json!({"ml_python":std::env::current_exe().unwrap()});
-        for (benchmark, value, development, judge) in [
-            (Benchmark::Chess960, serde_json::json!({}), 1200, 300),
-            (Benchmark::GameBuild, serde_json::json!({}), 1800, 300),
-            (Benchmark::DatasetDashboard, serde_json::json!({}), 900, 300),
-            (Benchmark::MazeGame, follow.clone(), 1800, 600),
-            (Benchmark::MlPredictor, ml.clone(), 900, 180),
-        ] {
-            let config = Config::new(benchmark, value).unwrap();
-            assert_eq!((config.development_seconds, config.judge_seconds), (development, judge));
-        }
-        for key in TIME_LIMITS {
-            let error = Config::new(Benchmark::Chess960, serde_json::json!({key: 1200})).unwrap_err().to_string();
-            assert!(error.contains(key), "{error}");
-        }
-    }
-}

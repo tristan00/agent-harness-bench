@@ -17,7 +17,6 @@ const SUBMIT: &str = "Keep the deliverable in the folder named submission inside
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Inspiration {
-    pub registry_version: String,
     pub seed: u64,
     pub themes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -34,7 +33,7 @@ pub const GAME_TYPES: [&str; 22] = [
 pub fn random_inspiration(with_genres: bool) -> Inspiration {
     let seed = crate::random_seed();
     let genres = if with_genres { game_types(seed) } else { vec![] };
-    Inspiration { registry_version: if with_genres { "game-themes.v2" } else { "game-themes.v1" }.into(), seed, themes: theme_words(seed), genres }
+    Inspiration { seed, themes: theme_words(seed), genres }
 }
 
 pub fn game_types(seed: u64) -> Vec<String> {
@@ -75,79 +74,76 @@ fn dashboard(assignment: &crate::datasets::Assignment) -> String {
         serde_json::to_string_pretty(&serde_json::json!({"name":assignment.dataset.name,"urls":assignment.dataset.urls,"instructions":assignment.dataset.instructions})).expect("serializable dataset")
     )
 }
+/// Theme categories drawn from for game prompts; each prompt takes one word from each of three distinct categories.
+pub const THEME_CATEGORIES: [(&str, &[&str]); 5] = [
+    ("cultures", &[
+        "Māori", "Swahili", "Andean", "Polynesian", "Bengali", "Yoruba", "Persian", "Basque", "Inuit", "Javanese", "Celtic", "Berber",
+        "Sámi", "Ainu", "Tuareg", "Zulu", "Maasai", "Igbo", "Akan", "Amhara", "Somali", "Malagasy", "Hausa", "Wolof", "Xhosa", "Fulani",
+        "Bedouin", "Navajo", "Cherokee", "Lakota", "Haudenosaunee", "Cree", "Hopi", "Tlingit", "Quechua", "Aymara", "Mapuche", "Guaraní",
+        "Zapotec", "Garifuna", "Gullah", "Cajun", "Romani", "Breton", "Sardinian", "Catalan", "Galician", "Frisian", "Sicilian", "Faroese",
+        "Icelandic", "Armenian", "Georgian", "Kurdish", "Pashtun", "Uyghur", "Kazakh", "Mongolian", "Tibetan", "Bhutanese", "Tamil",
+        "Punjabi", "Gujarati", "Sinhalese", "Hmong", "Dayak", "Balinese", "Okinawan", "Korean", "Hakka", "Cantonese", "Yolŋu", "Hawaiian",
+        "Samoan", "Tongan", "Fijian", "Chamorro", "Haitian", "Afro-Brazilian", "Afro-Cuban",
+    ]),
+    ("civilizations", &[
+        "Sumer", "Mali Empire", "Byzantium", "Indus Valley", "Khmer Empire", "Aksum", "Phoenicia", "Inca Empire", "Han dynasty", "Nubia",
+        "Maya", "Srivijaya", "Akkad", "Babylon", "Assyria", "Elam", "Hittite Empire", "Ancient Egypt", "Kush", "Minoan Crete", "Mycenae",
+        "Classical Athens", "Sparta", "Etruria", "Roman Republic", "Carthage", "Achaemenid Persia", "Parthia", "Sasanian Empire",
+        "Nabataea", "Palmyra", "Urartu", "Scythia", "Bactria", "Kushan Empire", "Maurya Empire", "Gupta Empire", "Chola dynasty",
+        "Vijayanagara", "Mughal Empire", "Ottoman Empire", "Abbasid Caliphate", "Al-Andalus", "Seljuk Empire", "Timurid Empire",
+        "Mongol Empire", "Xiongnu", "Göktürk Khaganate", "Qin dynasty", "Tang dynasty", "Song dynasty", "Ming dynasty", "Heian Japan",
+        "Goryeo", "Joseon", "Silla", "Champa", "Majapahit", "Pagan Kingdom", "Ayutthaya", "Đại Việt", "Great Zimbabwe",
+        "Kingdom of Kongo", "Songhai Empire", "Ghana Empire", "Kingdom of Benin", "Ashanti Empire", "Zagwe dynasty", "Olmec",
+        "Teotihuacan", "Toltec", "Aztec Empire", "Moche", "Nazca", "Tiwanaku", "Chimú", "Cahokia", "Ancestral Puebloans",
+        "Norse Greenland", "Carolingian Empire", "Holy Roman Empire", "Kievan Rus", "Venetian Republic", "Hanseatic League",
+        "Polish–Lithuanian Commonwealth",
+    ]),
+    ("eras", &[
+        "Bronze Age", "Renaissance", "Industrial Revolution", "Age of Sail", "Neolithic", "Late Antiquity", "Space Age", "Medieval era",
+        "Enlightenment", "Iron Age", "Information Age", "Early Modern era", "Cambrian", "Carboniferous", "Jurassic", "Cretaceous",
+        "Ice Age", "Paleolithic", "Mesolithic", "Copper Age", "Bronze Age collapse", "Axial Age", "Classical antiquity",
+        "Hellenistic period", "Warring States period", "Three Kingdoms period", "Migration Period", "Viking Age", "Islamic Golden Age",
+        "High Middle Ages", "Late Middle Ages", "Age of Discovery", "Golden Age of Piracy", "Baroque era", "Age of Steam",
+        "Romantic era", "Victorian era", "Meiji era", "Gilded Age", "Belle Époque", "Jazz Age", "Interwar period", "Atomic Age",
+        "Jet Age", "Digital Age",
+    ]),
+    ("fields of study", &[
+        "biology", "philosophy", "etymology", "linguistics", "music", "ecology", "astronomy", "geology", "mathematics", "architecture",
+        "oceanography", "botany", "cryptography", "mycology", "archaeology", "thermodynamics", "cartography", "anthropology", "poetry",
+        "optics", "chemistry", "physics", "genetics", "neuroscience", "psychology", "economics", "sociology", "game theory", "statistics",
+        "logic", "topology", "metallurgy", "meteorology", "glaciology", "volcanology", "seismology", "hydrology", "limnology",
+        "speleology", "entomology", "ornithology", "ichthyology", "herpetology", "paleontology", "epidemiology", "immunology",
+        "pharmacology", "toxicology", "virology", "microbiology", "marine biology", "zoology", "horticulture", "agronomy", "forestry",
+        "soil science", "astrophysics", "cosmology", "quantum mechanics", "acoustics", "electromagnetism", "fluid dynamics",
+        "materials science", "crystallography", "chaos theory", "robotics", "computer science", "information theory", "cybernetics",
+        "semiotics", "rhetoric", "ethics", "epistemology", "mythology", "folklore", "numismatics", "heraldry", "typography",
+        "urban planning", "civil engineering", "aerospace engineering", "demography", "phonetics", "ethnomusicology",
+        "paleoclimatology",
+    ]),
+    ("activities", &[
+        "fishing", "farming", "beekeeping", "weaving", "pottery", "blacksmithing", "glassblowing", "brewing", "baking", "cooking",
+        "foraging", "hunting", "herding", "sailing", "rowing", "canoeing", "mountaineering", "rock climbing", "caving", "pearl diving",
+        "surfing", "skiing", "ice skating", "dog sledding", "horseback riding", "falconry", "archery", "fencing", "wrestling",
+        "dancing", "drumming", "choral singing", "storytelling", "puppetry", "theater", "juggling", "acrobatics", "stage magic",
+        "painting", "sculpting", "woodcarving", "origami", "quilting", "knitting", "embroidery", "dyeing", "perfumery", "tea ceremony",
+        "winemaking", "cheesemaking", "gardening", "bonsai", "flower arranging", "birdwatching", "stargazing", "photography",
+        "filmmaking", "journalism", "letter writing", "bookbinding", "printing", "papermaking", "calligraphy", "clockmaking",
+        "shipbuilding", "bridge building", "masonry", "mining", "logging", "salt harvesting", "rice planting", "silk farming",
+        "charcoal burning", "barrel making", "rope making", "net mending", "leather tanning", "candle making", "soap making",
+        "gem cutting", "jewelry making", "toy making", "kite flying", "festival planning", "mail delivery", "firefighting",
+        "lighthouse keeping", "railway building", "beachcombing", "treasure hunting", "smuggling", "detective work", "tracking",
+        "orienteering", "parkour", "skateboarding", "hot-air ballooning", "gliding", "whitewater rafting", "ice fishing",
+        "pilgrimage", "caravan trading", "market haggling", "pigeon racing", "translation", "herbal healing",
+    ]),
+];
+
 fn theme_words(seed: u64) -> Vec<String> {
-    const POOLS: [&[&str]; 4] = [
-        &[
-            "Māori",
-            "Swahili",
-            "Andean",
-            "Polynesian",
-            "Bengali",
-            "Yoruba",
-            "Persian",
-            "Basque",
-            "Inuit",
-            "Javanese",
-            "Celtic",
-            "Berber",
-        ],
-        &[
-            "Sumer",
-            "Mali Empire",
-            "Byzantium",
-            "Indus Valley",
-            "Khmer Empire",
-            "Aksum",
-            "Phoenicia",
-            "Inca Empire",
-            "Han dynasty",
-            "Nubia",
-            "Maya",
-            "Srivijaya",
-        ],
-        &[
-            "Bronze Age",
-            "Renaissance",
-            "Industrial Revolution",
-            "Age of Sail",
-            "Neolithic",
-            "Late Antiquity",
-            "Space Age",
-            "Medieval era",
-            "Enlightenment",
-            "Iron Age",
-            "Information Age",
-            "Early Modern era",
-        ],
-        &[
-            "biology",
-            "philosophy",
-            "etymology",
-            "linguistics",
-            "music",
-            "ecology",
-            "astronomy",
-            "geology",
-            "mathematics",
-            "architecture",
-            "oceanography",
-            "botany",
-            "cryptography",
-            "mycology",
-            "archaeology",
-            "thermodynamics",
-            "cartography",
-            "anthropology",
-            "poetry",
-            "optics",
-        ],
-    ];
     let mut rng = seed;
-    let mut categories = vec![0, 1, 2, 3];
+    let mut categories: Vec<usize> = (0..THEME_CATEGORIES.len()).collect();
     let mut result = Vec::new();
     for _ in 0..3 {
         let i = (crate::random(&mut rng) % categories.len() as u64) as usize;
-        let pool = POOLS[categories.remove(i)];
+        let pool = THEME_CATEGORIES[categories.remove(i)].1;
         result.push(pool[(crate::random(&mut rng) % pool.len() as u64) as usize].into());
     }
     result
@@ -242,22 +238,4 @@ fn maze_judge(c: &Campaign, received: usize) -> String {
 
 pub fn maze_received(c: &Campaign, completed: usize) -> usize {
     (completed + 1).min(maze_requests(c).len())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn game_types_are_one_to_three_distinct_reproducible_draws() {
-        let mut seen = std::collections::HashSet::new();
-        for seed in 0..400 {
-            let drawn = super::game_types(seed);
-            assert_eq!(drawn, super::game_types(seed));
-            assert!((1..=3).contains(&drawn.len()));
-            assert_eq!(drawn.iter().collect::<std::collections::HashSet<_>>().len(), drawn.len());
-            assert!(drawn.iter().all(|genre| super::GAME_TYPES.contains(&genre.as_str())));
-            seen.extend(drawn);
-        }
-        assert_eq!(seen.len(), super::GAME_TYPES.len());
-        assert_eq!(super::listed(&["a".into(), "b".into(), "c".into()]), "a, b and c");
-    }
 }

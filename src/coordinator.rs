@@ -51,6 +51,10 @@ pub fn stop(url: &str, session: &str) -> Result<()> {
     post(url, &format!("/api/sessions/{session}/stop"), &json!({})).map(|_| ())
 }
 
+pub fn state(url: &str) -> Result<Value> {
+    curl(&[&format!("{}/api/state", url.trim_end_matches('/'))])
+}
+
 pub fn session(url: &str, session: &str) -> Result<Value> {
     curl(&[&format!("{}/api/sessions/{session}", url.trim_end_matches('/'))])
 }
