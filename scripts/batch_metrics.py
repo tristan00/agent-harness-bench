@@ -167,7 +167,18 @@ def source_line_details(benchmark_root, artifact):
     return dict(sorted(lines.items()))
 
 
-def collect(case, run, benchmark_root, shared_board):
+def session_planner(session, run):
+    requests = (session or {}).get("requests") or []
+    seconds = sum(max(0, min(r.get("plannerEnded") or r.get("planner_ended") or run["deadline_ms"], run["deadline_ms"]) - max(r["started"], run["started_at_ms"])) for r in requests) / 1000
+    usage = [r.get("usage") for r in requests]
+    fields = Counter()
+    for item in usage:
+        fields.update({key: value for key, value in (item or {}).items() if isinstance(value, int) and key != "totalTokens"})
+    tokens = sum(item["totalTokens"] for item in usage) if usage and all(item and "totalTokens" in item for item in usage) else None
+    return dict(fields), tokens, seconds
+
+
+def collect(case, run, benchmark_root, shared_board, session=None):
     if run is None:
         return {"run_id":None, "workspace":case["workspace"], "benchmark":case["benchmark"],
                 "settings_at_run":case["settings"], "dataset":None, "artifact":None, "source_lines":None, "source_lines_by_file":{},
@@ -175,8 +186,7 @@ def collect(case, run, benchmark_root, shared_board):
                 "tokens":{"recorded_total":0, "measured_launches":0, "launches":0, "complete":True,
                           "planner_usage":{}, "proxy_agent_seconds":0, "development_seconds":0},
                 "evidence":{"error":case.get("error"), "tasks":[]}}
-    private = benchmark_root / "coordinator" / run["id"] / "board"
-    board_root = private if (private / "state.json").exists() else shared_board
+    board_root = shared_board
     state_path = board_root / "state.json"
     state = read(state_path)
     tasks = {task["id"]: task for task in state.get("archived", []) + state.get("tasks", [])
@@ -197,14 +207,7 @@ def collect(case, run, benchmark_root, shared_board):
             attempts.append(item)
             launches.append(item)
         records.append({**{key: task.get(key) for key in ["id", "title", "cwd", "parent", "after", "dependencies", "conflicts", "related", "acceptance", "stage", "attributes"]}, "supersedes":supersedes(task), "attempts": attempts})
-    progress_root = benchmark_root / "coordinator" / run["id"]
-    fields, turns = event_usage(progress_root / "planner.log")
-    planner_tokens = fields.get("input_tokens", 0) + fields.get("output_tokens", 0) if turns else None
-    planner_seconds = (run["deadline_ms"] - run["started_at_ms"]) / 1000
-    log = progress_root / "planner.log"
-    progress = progress_root / "progress.json"
-    if progress.exists() and read(progress).get("phase") == "planner_exited":
-        planner_seconds = max(0, min(planner_seconds, log.stat().st_mtime - run["started_at_ms"] / 1000))
+    fields, planner_tokens, planner_seconds = session_planner(session, run)
     launches.append({"stage":"planner", "tokens":planner_tokens})
     parallel = parallel_metrics(intervals)
     known = [item["tokens"] for item in launches if item["tokens"] is not None]
@@ -218,7 +221,7 @@ def collect(case, run, benchmark_root, shared_board):
                        "proxy_agent_seconds": parallel["worker_agent_seconds"] + planner_seconds, "planner_seconds":planner_seconds,
                        "development_seconds": (run["deadline_ms"] - run["started_at_ms"]) / 1000},
             "evidence": {"state_path":str(state_path), "state_sha256":hashlib.sha256(state_path.read_bytes()).hexdigest(),
-                         "planner_log":str(log), "tasks":records}}
+                         "session":(session or {}).get("id"), "tasks":records}}
 
 
 def weighted(values, weights):

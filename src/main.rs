@@ -1,7 +1,6 @@
 use agent_harness_bench::{
     Result,
     service::Service,
-    session::{self, Subcommand},
 };
 use serde_json::{Value, json};
 use std::{
@@ -17,17 +16,12 @@ fn main() {
 }
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    match session::subcommand(&args)? {
-        Some(Subcommand::Session) => return session::session(),
-        Some(Subcommand::Planner) => std::process::exit(session::planner()?),
-        None => {}
-    }
     if args.get(1).map(String::as_str) == Some("baseline") {
         return baseline(args.get(2).map(String::as_str).unwrap_or("random"));
     }
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
-            "harness-bench serve [--bind 127.0.0.1:8741] [--data data]\nLocal Rust benchmark evaluator. Admin/judge tokens are generated in the data directory.\nUse scripts/harness.py for batches, tasks and submissions."
+            "harness-bench serve [--bind 127.0.0.1:8741] [--data data]\nLocal Rust benchmark evaluator. Admin/judge tokens are generated in the data directory.\nSubmit batches with POST /v1/benchmark-batches using the admin token."
         );
         return Ok(());
     }

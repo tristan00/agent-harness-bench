@@ -29,18 +29,8 @@ fn completed_requests(db: &Store, run: &str) -> Result<Vec<Value>> {
     Ok(completed)
 }
 
-pub(crate) fn handoff_token(admin: &str, run: &str) -> String {
-    crate::storage::hash(&format!("{admin}:handoff:{run}"))
-}
-
-pub(crate) fn started(admin: &str, campaign: &Campaign, run: &Run, token: &str) -> Value {
-    let mut config = serde_json::to_value(&campaign.config).expect("serializable config");
-    config.as_object_mut().unwrap().remove("follow_ups");
-    let mut started = json!({"run":run,"run_token":token,"prompt":prompts::builder(campaign, run),"config":config,"themes":prompts::themes(run)});
-    if campaign.config.benchmark == Benchmark::MazeGame {
-        started["handoff_token"] = json!(handoff_token(admin, &run.id));
-    }
-    started
+pub(crate) fn callback_secret(admin: &str, run: &str) -> String {
+    crate::storage::hash(&format!("{admin}:coordinator-callback:{run}"))
 }
 
 struct Session {
@@ -135,12 +125,11 @@ impl Service {
     }
     pub(crate) fn wipe(&self) -> Result<Value> {
         let _batches = self.batch_lock.lock().unwrap();
-        let mut workflows = self.workflows.lock().unwrap();
+        let open: Vec<coordinator::Workflow> = self.workflows.lock().unwrap().drain().map(|(_, workflow)| workflow).collect();
         let mut errors = Vec::new();
-        let stopped = workflows.len();
-        for (id, workflow) in workflows.drain() {
-            workflow.child.tree.stop();
-            if let Err(error) = coordinator::stop_workspace_tasks(&self.root, &id) {
+        let stopped = open.len();
+        for workflow in open {
+            if let Err(error) = coordinator::stop(&workflow.url, &workflow.session) {
                 errors.push(error.to_string());
             }
         }
@@ -151,14 +140,13 @@ impl Service {
         {
             let db = self.db();
             let tx = db.db.unchecked_transaction()?;
-            for table in ["iterations", "workflows", "events", "games", "reports", "judgments", "submissions", "runs", "campaigns", "batches"] {
+            for table in ["workflows", "events", "games", "reports", "judgments", "submissions", "runs", "campaigns", "batches"] {
                 deleted.insert(table.into(), json!(tx.execute(&format!("DELETE FROM {table}"), [])?));
             }
             tx.commit()?;
         }
-        drop(workflows);
         let mut removed = Vec::new();
-        for name in ["submissions", "work", "coordinator", "batch-scores"] {
+        for name in ["submissions", "work", "deliveries", "batch-scores"] {
             let path = self.root.join(name);
             if path.exists() {
                 match fs::remove_dir_all(&path) {
@@ -168,6 +156,88 @@ impl Service {
             }
         }
         Ok(json!({"deleted":deleted,"stopped_planners":stopped,"removed":removed,"errors":errors}))
+    }
+    pub(crate) fn accept(&self, id: &str, submission: Submission) -> Result<Artifact> {
+        let open = |run: &Run| run.status == "developing" && now_ms() < run.deadline_ms;
+        if !open(&self.db().run(id)?) {
+            return Err("development deadline passed".into());
+        }
+        let artifact = artifacts::save(&self.root, submission)?;
+        let db = self.db();
+        let mut run = db.run(id)?;
+        if !open(&run) {
+            return Err("deadline passed before the delivery was accepted".into());
+        }
+        let tx = db.db.unchecked_transaction()?;
+        db.save_artifact(id, &artifact)?;
+        run.submission_id = Some(artifact.id.clone());
+        db.save_run(&run)?;
+        db.event(Some(id), "submitted", &artifact)?;
+        tx.commit()?;
+        Ok(artifact)
+    }
+    fn coordinator_event(&self, id: &str, body: &Value) -> Result<Value> {
+        let Some(workflow) = self.workflows.lock().unwrap().get(id).cloned() else {
+            return Ok(json!({"ignored":"case is no longer running"}));
+        };
+        if body["session"].as_str() != Some(workflow.session.as_str()) {
+            return Ok(json!({"ignored":"unknown session"}));
+        }
+        let kind = body["event"].as_str().unwrap_or_default();
+        let key = format!("{kind}:{}:{}", body["request"], body["delivery"]);
+        let mut record = self.db().workflow(id)?.ok_or("missing workflow")?;
+        if record["handled"].as_array().is_some_and(|seen| seen.iter().any(|k| k == &json!(key))) {
+            return Ok(json!({"duplicate":true}));
+        }
+        let mut accepted = None;
+        if let Some(path) = body["path"].as_str() {
+            match artifacts::snapshot(Path::new(path)).and_then(|submission| self.accept(id, submission)) {
+                Ok(artifact) => accepted = Some(artifact.id),
+                Err(error) => {
+                    self.db().event(Some(id), "delivery_rejected", &json!({"delivery":body["delivery"],"error":error.to_string()}))?;
+                }
+            }
+        }
+        if !record["handled"].is_array() {
+            record["handled"] = json!([]);
+        }
+        record["handled"].as_array_mut().unwrap().push(json!(key));
+        if kind == "done" {
+            let db = self.db();
+            let run = db.run(id)?;
+            let campaign = db.campaign(&run.campaign_id)?;
+            let open = run.status == "developing" && now_ms() < run.deadline_ms;
+            if campaign.config.benchmark == Benchmark::MazeGame && open {
+                let requests = prompts::maze_requests(&campaign);
+                let current = completed_requests(&db, id)?.len() + 1;
+                let stalls = record["stalls"].as_u64().unwrap_or(0);
+                let next = if accepted.is_some() {
+                    db.event(Some(id), "request_completed", &json!({"request":current,"submission_id":run.submission_id,"completed_at_ms":now_ms(),"elapsed_ms":now_ms() - run.started_at_ms}))?;
+                    record["stalls"] = json!(0);
+                    requests.get(current).map(|text| prompts::maze_follow_up(text))
+                } else if stalls + 1 < 3 {
+                    record["stalls"] = json!(stalls + 1);
+                    requests.get(current - 1).map(|text| prompts::maze_continue(text))
+                } else {
+                    None
+                };
+                if let Some(text) = next {
+                    record["pending_message"] = json!(text);
+                    db.save_workflow(id, &record)?;
+                    return Ok(json!({"next":true}));
+                }
+            }
+            record["status"] = json!(if body["status"] == "completed" { "completed" } else { "failed" });
+            record["error"] = body["error"].clone();
+            record["ended_at_ms"] = json!(now_ms());
+            db.save_workflow(id, &record)?;
+            db.event(Some(id), "coordinator_stopped", &record)?;
+            drop(db);
+            self.workflows.lock().unwrap().remove(id);
+            return Ok(json!({"finished":true}));
+        }
+        self.db().save_workflow(id, &record)?;
+        Ok(json!({"accepted":accepted}))
     }
     pub(crate) fn db(&self) -> MutexGuard<'_, Store> {
         self.store.lock().expect("database mutex poisoned")
@@ -180,10 +250,12 @@ impl Service {
                     .as_str()
                     .ok_or("invalid workflow")?
                     .to_owned();
+                if let Some(resumed) = coordinator::Workflow::from_record(&workflow) {
+                    self.workflows.lock().unwrap().insert(id, resumed);
+                    continue;
+                }
                 workflow["status"] = json!("interrupted");
-                if let Err(error) = coordinator::stop_workspace_tasks(&self.root, &id) { eprintln!("{error}"); }
-                workflow["error"] =
-                    json!("Service restarted; last accepted completion is retained for scoring");
+                workflow["error"] = json!("Service restarted without a coordinator session record");
                 db.save_workflow(&id, &workflow)?;
                 db.event(Some(&id), "coordinator_interrupted", &workflow)?;
             }
@@ -243,28 +315,31 @@ impl Service {
     pub fn tick(&self) -> Result<()> {
         let now = now_ms();
         let mut finished = Vec::new();
-        {
+        let (expired, open): (Vec<(String, coordinator::Workflow)>, Vec<(String, coordinator::Workflow)>) = {
             let mut workflows = self.workflows.lock().unwrap();
-            for (id, workflow) in workflows.iter_mut() {
-                if now >= workflow.deadline_ms || Instant::now() >= workflow.deadline {
-                    workflow.child.tree.stop();
-                    finished.push((id.clone(), "deadline", None));
-                } else if let Some(status) = workflow.child.try_wait()? {
-                    workflow.child.tree.stop();
-                    finished.push((
-                        id.clone(),
-                        if status.success() {
-                            "completed"
-                        } else {
-                            "failed"
-                        },
-                        status.code(),
-                    ));
-                }
+            let due: Vec<String> = workflows.iter().filter(|(_, workflow)| now >= workflow.deadline_ms).map(|(id, _)| id.clone()).collect();
+            let expired = due.into_iter().filter_map(|id| workflows.remove(&id).map(|workflow| (id, workflow))).collect();
+            (expired, workflows.iter().map(|(id, workflow)| (id.clone(), workflow.clone())).collect())
+        };
+        for (id, workflow) in expired {
+            if let Err(error) = coordinator::stop(&workflow.url, &workflow.session) {
+                eprintln!("{error}");
             }
-            for (id, _, _) in &finished {
-                workflows.remove(id);
-                if let Err(error) = coordinator::stop_workspace_tasks(&self.root, id) { eprintln!("{error}"); }
+            finished.push((id, "deadline", None::<i32>));
+        }
+        for (id, workflow) in open {
+            let pending = self.db().workflow(&id)?.and_then(|record| record["pending_message"].as_str().map(str::to_owned));
+            if let Some(text) = pending {
+                match coordinator::message(&workflow.url, &workflow.session, &text) {
+                    Ok(()) => {
+                        let db = self.db();
+                        if let Some(mut record) = db.workflow(&id)? {
+                            record["pending_message"] = Value::Null;
+                            db.save_workflow(&id, &record)?;
+                        }
+                    }
+                    Err(error) => eprintln!("{error}"),
+                }
             }
         }
         // Kill without acquiring the protocol mutex: a hung action cannot postpone termination.
@@ -290,9 +365,6 @@ impl Service {
             if let Some(mut workflow) = db.workflow(&id)? {
                 workflow["status"] = json!(status);
                 workflow["exit_code"] = json!(code);
-                if status == "failed" {
-                    workflow["error"] = json!(coordinator::failure(&self.root, &id, code));
-                }
                 workflow["ended_at_ms"] = json!(now);
                 db.save_workflow(&id, &workflow)?;
                 db.event(Some(&id), "coordinator_stopped", &workflow)?;
@@ -532,7 +604,7 @@ impl Service {
             if standing.id.starts_with("baseline:") {
                 continue;
             }
-            let report = json!({"benchmark":"chess960","prompt_version":prompts::VERSION,"campaign_id":c.id,"seed":c.config.seed,"config":c.config,"rating":"per_round_pre_round_elo",
+            let report = json!({"benchmark":"chess960","prompt_version":prompts::version(Benchmark::Chess960),"campaign_id":c.id,"seed":c.config.seed,"config":c.config,"rating":"per_round_pre_round_elo",
                 "metrics":standing,"pool":table,"loc_definition":"nonblank physical source lines including comments; detected source extensions plus source_files"});
             db.save_report(&standing.id, &report)?;
             let mut run = db.run(&standing.id)?;
@@ -739,20 +811,6 @@ impl Service {
                 self.admin(token)?;
                 Ok(json!({"batch":self.stop_batch(id)?}))
             }
-            ("GET", ["v1", "runs", id, "task"]) => {
-                self.run_auth(id, token)?;
-                let db = self.db();
-                let run = db.run(id)?;
-                let campaign = db.campaign(&run.campaign_id)?;
-                let mut task = json!({"run_id":id,"benchmark":campaign.config.benchmark,"prompt":prompts::builder(&campaign, &run)});
-                if let Some(inspiration) = &run.inspiration {
-                    task["themes"] = json!(inspiration.themes);
-                    task["inspiration"] = json!(inspiration);
-                }
-                if let Some(dataset) = run.dataset { task["dataset"] = json!(dataset); }
-                if let Some(ml) = run.ml { task["ml"] = json!(ml); }
-                Ok(task)
-            }
             ("GET", ["health"]) => Ok(
                 json!({"status":"ok","service":"agent-harness-bench","protocol_version":1,"server_time_ms":now_ms()}),
             ),
@@ -787,75 +845,21 @@ impl Service {
                 let db = self.db();
                 Ok(json!({"run":db.run(id)?,"report":db.report(id)?,"completed_requests":completed_requests(&db, id)?,"server_time_ms":now_ms()}))
             }
-            ("POST", ["v1", "runs", id, "handoff"]) => {
-                if token != self.admin && token != handoff_token(&self.admin, id) {
-                    return Err(ApiError(401, "supervisor handoff token required".into()));
+            ("POST", ["v1", "runs", id, "coordinator", secret]) => {
+                if *secret != callback_secret(&self.admin, id) {
+                    return Err(ApiError(401, "unknown coordinator callback".into()));
                 }
-                let db = self.db();
-                let mut run = db.run(id)?;
-                let campaign = db.campaign(&run.campaign_id)?;
-                if campaign.config.benchmark != Benchmark::MazeGame {
-                    return Err(ApiError(409, "this benchmark has no follow-up requests".into()));
-                }
-                let requests = prompts::maze_requests(&campaign);
-                let completed = completed_requests(&db, id)?;
-                let current = completed.len() + 1;
-                let submitted = db.events(id)?.iter().take_while(|e| e["kind"] != "request_completed").any(|e| e["kind"] == "submitted");
-                let now = now_ms();
-                let open = run.status == "developing" && now < run.deadline_ms;
-                match body["action"].as_str() {
-                    Some("current") => {
-                        let text = requests.get(current - 1).cloned();
-                        Ok(json!({"request":current,"requests":requests.len(),"submitted":submitted,"open":open,
-                            "continue":text.as_deref().map(prompts::maze_continue),"completed":completed}))
-                    }
-                    Some(action @ ("advance" | "stop")) => {
-                        if !open {
-                            return Err(ApiError(409, "development deadline passed".into()));
-                        }
-                        let mut next = None;
-                        if action == "advance" {
-                            if !submitted || current > requests.len() {
-                                return Err(ApiError(409, "a new accepted submission is required before handing off".into()));
-                            }
-                            db.event(Some(id), "request_completed", &json!({"request":current,"submission_id":run.submission_id,"completed_at_ms":now,"elapsed_ms":now - run.started_at_ms}))?;
-                            next = requests.get(current).map(|text| prompts::maze_follow_up(text));
-                        } else {
-                            db.event(Some(id), "handoff_stopped", &json!({"request":current,"at_ms":now}))?;
-                        }
-                        if next.is_none() {
-                            run.deadline_ms = now;
-                            db.save_run(&run)?;
-                            drop(db);
-                            if let Some(workflow) = self.workflows.lock().unwrap().get_mut(*id) {
-                                workflow.deadline_ms = now;
-                                workflow.deadline = Instant::now();
-                            }
-                        }
-                        Ok(json!({"next":next}))
-                    }
-                    _ => Err(ApiError(400, "action must be current, advance or stop".into())),
-                }
+                Ok(self.coordinator_event(id, &body)?)
             }
             ("POST", ["v1", "runs", id, "submissions"]) => {
-                self.run_auth(id, token)?;
-                let open = |run: &Run| run.status == "developing" && now_ms() < run.deadline_ms;
-                if !open(&self.db().run(id)?) {
+                self.admin(token)?;
+                let run = self.db().run(id)?;
+                if run.status != "developing" || now_ms() >= run.deadline_ms {
                     return Err(ApiError(409, "development deadline passed".into()));
                 }
-                let artifact = artifacts::save(&self.root, serde_json::from_value(body)?)?;
-                let db = self.db();
-                let mut run = db.run(id)?;
-                if !open(&run) {
-                    return Err(ApiError(409, "deadline passed before snapshot was accepted".into()));
-                }
-                let tx = db.db.unchecked_transaction().map_err(|e| ApiError(500, e.to_string()))?;
-                db.save_artifact(id, &artifact)?;
-                run.submission_id = Some(artifact.id.clone());
-                db.save_run(&run)?;
-                db.event(Some(id), "submitted", &artifact)?;
-                tx.commit().map_err(|e| ApiError(500, e.to_string()))?;
-                Ok(json!({"submission":artifact,"accepted_at_ms":now_ms(),"deadline_ms":run.deadline_ms}))
+                let artifact = self.accept(id, serde_json::from_value(body)?)?;
+                let deadline = self.db().run(id)?.deadline_ms;
+                Ok(json!({"submission":artifact,"accepted_at_ms":now_ms(),"deadline_ms":deadline}))
             }
             ("POST", ["v1", "judges", "claim"]) => self.claim(token, body),
             ("GET", ["v1", "judgments"]) => {
@@ -919,10 +923,9 @@ impl Service {
                     .as_deref()
                     .map(|id| db.artifact(id))
                     .transpose()?;
-                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::VERSION,"campaign_id":run.campaign_id,"themes":prompts::themes(&run),"inspiration":run.inspiration,"dataset":run.dataset,"ml":run.ml,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
+                let mut report = json!({"benchmark":c.config.benchmark,"prompt_version":prompts::version(c.config.benchmark),"campaign_id":run.campaign_id,"themes":prompts::themes(&run),"inspiration":run.inspiration,"dataset":run.dataset,"ml":run.ml,"config":c.config,"judge":j.judge,"scores":score,"total":total,"maximum":count*5,"mean_out_of_5":f64::from(total)/f64::from(count),"telemetry":j,"artifact":artifact});
                 report[format!("total_out_of_{}", count * 5)] = json!(total);
                 if let Some(progress) = progress {
-                    report["prompt_version"] = json!(prompts::MAZE_VERSION);
                     report["progress"] = json!({"fraction_sum":progress,"requests_received":received,"requests_total":prompts::maze_requests(&c).len()});
                 }
                 let tx = db
@@ -1028,7 +1031,7 @@ mod tests {
         run.ml = (c.config.benchmark == Benchmark::MlPredictor).then(crate::ml::random_assignment);
         let token = crate::id();
         db.insert_run(&run, &token).unwrap();
-        started(&service.admin, &c, &run, &token)
+        json!({"run":run,"run_token":token,"prompt":prompts::builder(&c, &run)})
     }
     fn expire(service: &Service, id: &str) {
         let db = service.db();
@@ -1037,20 +1040,20 @@ mod tests {
         db.save_run(&run).unwrap();
     }
     fn submit(service: &Service, started: &Value, text: &str) -> ApiResult<Value> {
-        service.route("POST", &format!("/v1/runs/{}/submissions", started["run"]["id"].as_str().unwrap()), started["run_token"].as_str().unwrap(),
+        service.route("POST", &format!("/v1/runs/{}/submissions", started["run"]["id"].as_str().unwrap()), &service.admin,
             json!({"manifest":{"run":["python","x.py"]},"files":[{"path":"x.py","text":text}]}))
     }
     fn setup() -> (crate::test_support::TestDir, Arc<Service>, String, String) {
         let root = crate::test_support::dir();
         let service = Service::open(root.path()).unwrap();
         let token = service.admin.clone();
-        let cid = campaign(&service, Benchmark::Chess960, json!({"development_seconds":10}));
+        let cid = campaign(&service, Benchmark::Chess960, json!({}));
         (root, service, token, cid)
     }
 
     #[test]
     fn game_inspiration_is_per_run_persisted_and_used_by_builders_and_judges() {
-        let (root, service, admin, _) = setup();
+        let (root, service, _admin, _) = setup();
         let cid = campaign(&service, Benchmark::GameBuild, json!({}));
         let mut assigned = Vec::new();
         for name in ["first", "second"] {
@@ -1059,10 +1062,6 @@ mod tests {
             let c = service.db().campaign(&cid).unwrap();
             let inspiration = run.inspiration.as_ref().unwrap();
             assert_eq!(inspiration.themes.len(), 3);
-            assert_eq!(started["themes"], json!(inspiration.themes));
-            let task = service.route("GET", &format!("/v1/runs/{}/task", run.id), &admin, Value::Null).unwrap();
-            assert_eq!(task["inspiration"], json!(inspiration));
-            assert_eq!(task["prompt"], started["prompt"]);
             assert!((1..=3).contains(&inspiration.genres.len()));
             for word in inspiration.themes.iter().chain(&inspiration.genres) {
                 assert!(started["prompt"].as_str().unwrap().contains(word.as_str()));
@@ -1085,11 +1084,8 @@ mod tests {
         let cid = campaign(&service, Benchmark::DatasetDashboard, json!({}));
         assert_eq!(service.db().campaign(&cid).unwrap().config.development_seconds, 900);
         let started = start(&service, &cid, "dashboard");
-        let task_path = format!("/v1/runs/{}/task", started["run"]["id"].as_str().unwrap());
-        let task = service.route("GET", &task_path, started["run_token"].as_str().unwrap(), Value::Null).unwrap();
-        assert_eq!(task["dataset"], started["run"]["dataset"]);
-        assert!(task["prompt"].as_str().unwrap().contains(task["dataset"]["dataset"]["id"].as_str().unwrap()));
-        assert_eq!(service.route("GET", &task_path, "wrong", Value::Null).unwrap_err().0, 401);
+        let prompt = started["prompt"].as_str().unwrap();
+        assert!(prompt.contains(started["run"]["dataset"]["dataset"]["name"].as_str().unwrap()) && !prompt.contains(started["run"]["dataset"]["dataset"]["id"].as_str().unwrap()));
     }
 
     #[test]
@@ -1195,46 +1191,76 @@ mod tests {
         let config = service.db().campaign(&cid).unwrap().config;
         assert_eq!((config.development_seconds, config.judge_seconds), (1800, 600));
         let start = start(service, &cid, "maze");
-        assert!(start["config"].get("follow_ups").is_none());
-        (start["run"]["id"].as_str().unwrap().to_owned(), start["run_token"].as_str().unwrap().to_owned(), start["handoff_token"].as_str().unwrap().to_owned())
+        (start["run"]["id"].as_str().unwrap().to_owned(), start["run_token"].as_str().unwrap().to_owned(), start["prompt"].as_str().unwrap().to_owned())
+    }
+
+    fn running_session(service: &Service, id: &str) -> String {
+        let deadline = service.db().run(id).unwrap().deadline_ms;
+        let record = json!({"run_id":id,"status":"running","session":"s1","coordinator_url":"http://127.0.0.1:9","deadline_ms":deadline});
+        service.db().save_workflow(id, &record).unwrap();
+        service.workflows.lock().unwrap().insert(id.to_owned(), coordinator::Workflow::from_record(&record).unwrap());
+        format!("/v1/runs/{id}/coordinator/{}", callback_secret(&service.admin, id))
+    }
+
+    fn delivery(root: &Path, number: u64, text: &str) -> PathBuf {
+        let folder = root.join("deliveries-fixture").join(number.to_string());
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("harness.json"), r#"{"run":["python","main.py"]}"#).unwrap();
+        fs::write(folder.join("main.py"), text).unwrap();
+        folder
     }
 
     #[test]
-    fn maze_requests_advance_only_through_the_supervisor_handoff() {
-        let (_root, service, admin, chess) = setup();
-        let (id, token, handoff) = maze_campaign(&service);
-        let task = service.route("GET", &format!("/v1/runs/{id}/task"), &token, Value::Null).unwrap();
-        let prompt = task["prompt"].as_str().unwrap();
+    fn maze_requests_advance_through_coordinator_callbacks() {
+        let (root, service, admin, chess) = setup();
+        let (id, _token, prompt) = maze_campaign(&service);
         assert!(prompt.contains(prompts::MAZE_REQUEST) && !prompt.contains("Second request."));
-        for word in ["stage", "sequen", "follow", "next request", "complete it"] {
-            assert!(!prompt.to_lowercase().contains(word), "{word}");
+        for word in ["stage", "sequen", "follow", "next request", "complete it", "HARNESS_RUN_TOKEN"] {
+            assert!(!prompt.to_lowercase().contains(&word.to_lowercase()), "{word}");
         }
-        let path = format!("/v1/runs/{id}/handoff");
-        assert_eq!(service.route("POST", &path, &token, json!({"action":"advance"})).unwrap_err().0, 401);
-        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
-        assert_eq!((current["request"].as_u64(), current["submitted"].as_bool()), (Some(1), Some(false)));
-        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
-        let maze = json!({"run":{"id":id},"run_token":token});
-        submit(&service, &maze, "print(1)").unwrap();
-        submit(&service, &maze, "print(1.5)").unwrap();
-        let next = service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
-        assert_eq!(next["next"], prompts::maze_follow_up("Second request."));
-        assert_eq!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap_err().0, 409);
-        let current = service.route("POST", &path, &handoff, json!({"action":"current"})).unwrap();
-        assert_eq!(current["continue"], prompts::maze_continue("Second request."));
-        submit(&service, &maze, "print(2)").unwrap();
-        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].as_str().unwrap().starts_with("Third request."));
-        submit(&service, &maze, "print(3)").unwrap();
-        assert!(service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap()["next"].is_null());
-        service.tick().unwrap();
-        let run = service.route("GET", &format!("/v1/runs/{id}"), &token, Value::Null).unwrap();
-        assert_eq!(run["run"]["status"], "frozen");
+        let path = running_session(&service, &id);
+        assert_eq!(service.route("POST", &format!("/v1/runs/{id}/coordinator/wrong"), "", json!({})).unwrap_err().0, 401);
+        let event = |kind: &str, request: u64, number: Option<u64>| {
+            let folder = number.map(|n| delivery(root.path(), n, &format!("print({n})")));
+            json!({"event":kind,"session":"s1","request":request,"delivery":number,"path":folder,"status":"completed"})
+        };
+        let pending = || service.db().workflow(&id).unwrap().unwrap()["pending_message"].clone();
+        service.route("POST", &path, "", event("done", 1, None)).unwrap();
+        assert_eq!(pending(), json!(prompts::maze_continue(prompts::MAZE_REQUEST)));
+        service.route("POST", &path, "", event("done", 1, Some(1))).unwrap();
+        assert_eq!(pending(), json!(prompts::maze_follow_up("Second request.")));
+        assert_eq!(service.route("POST", &path, "", event("done", 1, Some(1))).unwrap()["duplicate"], true);
+        assert!(service.route("POST", &path, "", event("delivered", 2, Some(2))).unwrap()["accepted"].is_string());
+        service.route("POST", &path, "", event("done", 2, Some(3))).unwrap();
+        assert!(pending().as_str().unwrap().starts_with("Third request."));
+        assert_eq!(service.route("POST", &path, "", event("done", 3, Some(4))).unwrap()["finished"], true);
+        assert!(!service.workflows.lock().unwrap().contains_key(&id));
+        assert_eq!(service.db().workflow(&id).unwrap().unwrap()["status"], "completed");
+        let run = service.route("GET", &format!("/v1/runs/{id}"), &admin, Value::Null).unwrap();
         assert_eq!(run["completed_requests"].as_array().unwrap().len(), 3);
         assert!(run["completed_requests"].as_array().unwrap().iter().all(|r| r["submission_id"].is_string()));
+        assert_eq!(service.route("POST", &path, "", event("done", 3, Some(5))).unwrap()["ignored"], "case is no longer running");
         let other = start(&service, &chess, "single");
-        assert!(other.get("handoff_token").is_none());
-        let other_path = format!("/v1/runs/{}/handoff", other["run"]["id"].as_str().unwrap());
-        assert_eq!(service.route("POST", &other_path, &admin, json!({"action":"current"})).unwrap_err().0, 409);
+        let other_id = other["run"]["id"].as_str().unwrap().to_owned();
+        let other_path = running_session(&service, &other_id);
+        assert_eq!(service.route("POST", &other_path, "", json!({"event":"done","session":"other"})).unwrap()["ignored"], "unknown session");
+        let done = service.route("POST", &other_path, "", json!({"event":"done","session":"s1","request":1,"delivery":1,"path":delivery(root.path(), 9, "print(9)"),"status":"completed"})).unwrap();
+        assert_eq!(done["finished"], true);
+        assert!(service.db().run(&other_id).unwrap().submission_id.is_some());
+    }
+
+    #[test]
+    fn deliveries_without_a_manifest_are_rejected_and_recorded() {
+        let (root, service, _admin, chess) = setup();
+        let started = start(&service, &chess, "broken");
+        let id = started["run"]["id"].as_str().unwrap().to_owned();
+        let path = running_session(&service, &id);
+        let folder = root.path().join("no-manifest");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("main.py"), "print(1)").unwrap();
+        service.route("POST", &path, "", json!({"event":"delivered","session":"s1","request":1,"delivery":1,"path":folder})).unwrap();
+        assert!(service.db().run(&id).unwrap().submission_id.is_none());
+        assert!(service.db().events(&id).unwrap().iter().any(|e| e["kind"] == "delivery_rejected" && e["data"]["error"].as_str().unwrap().contains("harness.json")));
     }
 
     #[test]
@@ -1253,12 +1279,11 @@ mod tests {
 
     #[test]
     fn maze_handoff_stop_freezes_and_judging_scores_received_requests() {
-        let (_root, service, _admin, _chess) = setup();
-        let (id, token, handoff) = maze_campaign(&service);
-        let path = format!("/v1/runs/{id}/handoff");
-        submit(&service, &json!({"run":{"id":id},"run_token":token}), "print(1)").unwrap();
-        service.route("POST", &path, &handoff, json!({"action":"advance"})).unwrap();
-        service.route("POST", &path, &handoff, json!({"action":"stop"})).unwrap();
+        let (root, service, _admin, _chess) = setup();
+        let (id, _token, _) = maze_campaign(&service);
+        let path = running_session(&service, &id);
+        service.route("POST", &path, "", json!({"event":"done","session":"s1","request":1,"delivery":1,"path":delivery(root.path(), 1, "print(1)"),"status":"completed"})).unwrap();
+        expire(&service, &id);
         service.tick().unwrap();
         let run = service.db().run(&id).unwrap();
         assert_eq!(run.status, "frozen");
@@ -1310,7 +1335,7 @@ mod tests {
         let cid = campaign(&s, Benchmark::MlPredictor, json!({"ml_python":python}));
         let started = start(&s, &cid, "ml");
         let id = started["run"]["id"].as_str().unwrap().to_owned();
-        let task = s.route("GET", &format!("/v1/runs/{id}/task"), started["run_token"].as_str().unwrap(), Value::Null).unwrap();
+        let task = json!({"prompt":started["prompt"],"ml":started["run"]["ml"]});
         let prompt = task["prompt"].as_str().unwrap();
         let assignment = &task["ml"]["task"];
         assert!(assignment["train"].as_array().unwrap().iter().all(|url| prompt.contains(url.as_str().unwrap())));
@@ -1319,7 +1344,7 @@ mod tests {
             assert!(!prompt.contains(hidden) && !task.to_string().contains(hidden), "{hidden}");
         }
         let path = format!("/v1/runs/{id}/submissions");
-        let scoped = started["run_token"].as_str().unwrap();
+        let scoped = token.as_str();
         let missing_output = json!({"manifest":{"predict":["python","p.py","{input}"]},"files":[{"path":"p.py","text":"print(1)"}]});
         assert_eq!(s.route("POST", &path, scoped, missing_output).unwrap_err().0, 400);
         s.route("POST", &path, scoped, json!({"manifest":{"predict":["python","p.py","{input}","{output}"]},"files":[{"path":"p.py","text":"print(1)"},{"path":"EDA.md","text":"# EDA"}]})).unwrap();

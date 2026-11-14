@@ -113,8 +113,7 @@ def setup(data, bind, coordinator_source, skip_build):
     data.mkdir(parents=True, exist_ok=True)
     profiles = data / "coordinator-profiles.json"
     if not profiles.exists():
-        profile = {"coordinator_url": "http://127.0.0.1:4242", "workspace": {},
-                   "session_command": "builtin", "session_planner_command": "builtin"}
+        profile = {"coordinator_url": "http://127.0.0.1:4242"}
         profiles.write_text(json.dumps({"default": profile}, indent=2), encoding="utf-8")
     start(data, bind, benchmark)
 

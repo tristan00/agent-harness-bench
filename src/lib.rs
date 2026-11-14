@@ -12,7 +12,6 @@ pub mod model;
 pub mod process;
 pub mod prompts;
 pub mod service;
-pub mod session;
 pub mod scoring;
 pub mod storage;
 

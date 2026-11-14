@@ -1,7 +1,7 @@
 use crate::{Result, coordinator, model::*, now_ms, prompts, service::Service};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
@@ -20,15 +20,10 @@ fn empty_object() -> Value {
     json!({})
 }
 
-pub(crate) fn allowed_agents(settings: &Value) -> bool {
-    settings["planner"].as_str().is_some_and(|id| crate::agents::allowed(id, crate::agents::family()))
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
     profile: String,
-    template_path: PathBuf,
     workspace_root: PathBuf,
     workspaces: Vec<Workspace>,
     #[serde(default = "default_parallel")]
@@ -52,7 +47,7 @@ fn shuffle<T>(items: &mut [T], mut seed: u64) {
 
 pub fn public(batch: &Value) -> Value {
     let mut value = batch.clone();
-    for field in ["profile_config", "template"] {
+    for field in ["profile_config"] {
         value.as_object_mut().unwrap().remove(field);
     }
     value
@@ -75,34 +70,6 @@ fn plain(path: &Path) -> String {
         .to_owned()
 }
 
-const LIMITS_FILE: &str = "LIMITS.json";
-pub(crate) const WORKSPACE_FILES: [&str; 3] = ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md", LIMITS_FILE];
-
-fn workspace_documents(path: &Path, settings: &Value) -> Result<Vec<(&'static str, String)>> {
-    let mut documents = Vec::new();
-    for (role, filename) in [("project_planner", "PROJECT_PLANNER.md"), ("worker_protocol", "WORKER_PROTOCOL.md")] {
-        let selection = &settings["prompts"][role];
-        let candidate = selection["candidate"].as_str().filter(|name| !name.is_empty()).ok_or("Workspace prompt candidate required")?;
-        if candidate.contains(['/', '\\', ':']) || candidate == "." || candidate == ".." {
-            return Err("Workspace prompt candidate must be a filename".into());
-        }
-        let file = path.join(filename);
-        if !fs::symlink_metadata(&file)?.is_file() { return Err("Workspace prompt must be a regular file".into()); }
-        let text = fs::read_to_string(file)?;
-        if !(1..=200).contains(&text.split_whitespace().count()) { return Err("Workspace prompts must contain 1..200 words".into()); }
-        if selection["sha256"] != format!("{:x}", Sha256::digest(text.as_bytes())) {
-            return Err("Workspace prompt differs from its selected candidate snapshot".into());
-        }
-        documents.push((filename, text));
-    }
-    let limits: Value = serde_json::from_slice(&fs::read(path.join(LIMITS_FILE)).map_err(|_| "Workspace LIMITS.json is required")?)?;
-    if limits != settings["limits"] {
-        return Err("Workspace LIMITS.json differs from its settings".into());
-    }
-    documents.push((LIMITS_FILE, serde_json::to_string_pretty(&limits)?));
-    Ok(documents)
-}
-
 impl Service {
     pub(crate) fn create_batch(&self, body: Value) -> Result<Value> {
         let _guard = self.batch_lock.lock().unwrap();
@@ -110,31 +77,11 @@ impl Service {
         if request.max_parallel == 0 || request.workspaces.is_empty() {
             return Err("max_parallel and workspace count must be positive".into());
         }
-        let mut profile = coordinator::profile(&self.root, &request.profile)?;
-        if !profile["coordinator_url"]
-            .as_str()
-            .is_some_and(|url| url.starts_with("http://127.0.0.1:"))
-        {
-            return Err("profile requires a shared loopback coordinator_url".into());
-        }
-        for (field, target, subcommand) in [("session_command", "command", "session"), ("session_planner_command", "planner_command", "planner")] {
-            let command = if profile[field].is_null() { json!(coordinator::BUILTIN) } else { profile[field].clone() };
-            coordinator::command(&command, subcommand)?;
-            profile[target] = command;
-        }
-        let template = fs::read_to_string(&request.template_path)?;
-        if !template.contains("{workspace_name}") || !template.contains("{benchmark_task}") {
-            return Err("template requires {workspace_name} and {benchmark_task}".into());
-        }
+        let profile = coordinator::profile(&self.root, &request.profile)?;
         let workspace_root = fs::canonicalize(&request.workspace_root)?;
         let mut roots = Vec::new();
         let mut cases = Vec::new();
         for workspace in &request.workspaces {
-            if !allowed_agents(&workspace.settings) {
-                return Err(
-                    format!("workspace planner and worker must each select an agent from agents.json allowed for the {} launcher family", crate::agents::family().unwrap_or("undetected")).into(),
-                );
-            }
             let path = fs::canonicalize(&workspace.path)?;
             if !path.is_dir()
                 || !path.starts_with(&workspace_root)
@@ -142,10 +89,6 @@ impl Service {
                 || !workspace.settings.is_object()
             {
                 return Err("each workspace must be a directory below workspace_root with object settings".into());
-            }
-            workspace_documents(&path, &workspace.settings)?;
-            if fs::read_dir(&path)?.any(|entry| entry.is_err() || !WORKSPACE_FILES.iter().any(|name| entry.as_ref().unwrap().file_name() == *name)) {
-                return Err("fresh workspaces may contain only their planner and worker documents and LIMITS.json".into());
             }
             if roots
                 .iter()
@@ -202,14 +145,6 @@ impl Service {
             for (index, path) in roots.iter().enumerate() {
                 let directory = path.join(name);
                 let relative = directory.strip_prefix(&workspace_root)?.to_string_lossy();
-                let prompt = template
-                    .replace("{benchmark_task}", name)
-                    .replace("{workspace_name}", &relative);
-                if !prompt.contains(&plain(&directory)) {
-                    return Err(
-                        "filled template must identify the actual benchmark workspace path".into(),
-                    );
-                }
                 let mut case = json!({"workspace":plain(path),"directory":plain(&directory),"workspace_name":relative,
                     "benchmark":name,"settings":request.workspaces[index].settings,"campaign_id":campaign.id,"status":"queued"});
                 if benchmark == Benchmark::DatasetDashboard {
@@ -230,7 +165,7 @@ impl Service {
         let batch = json!({"id":id,"status":"running","created_at_ms":now_ms(),"max_parallel":request.max_parallel,
             "order_seed":order_seed,"order_algorithm":"splitmix64-fisher-yates.v1",
             "chess_seed_explicit":request.task_configs.get("chess960").and_then(|config| config.get("seed")).is_some(),
-            "profile":request.profile,"profile_config":profile,"template":template,"template_path":request.template_path,
+            "profile":request.profile,"profile_config":profile,
             "campaigns":campaigns,"cases":cases});
         let tx = db.db.unchecked_transaction()?;
         for campaign in campaign_records {
@@ -284,25 +219,8 @@ impl Service {
                 if case["status"] != "queued" || active.contains(workspace) {
                     continue;
                 }
-                if !allowed_agents(&case["settings"]) {
-                    batch["cases"][index]["status"] = json!("failed");
-                    batch["cases"][index]["error"] =
-                        json!("missing or unsupported workspace planner");
-                    changed = true;
-                    continue;
-                }
-                let mut profile = batch["profile_config"].clone();
-                profile["workspace"] = case["settings"].clone();
-                profile["workspace_path"] = case["directory"].clone();
-                profile["workspace_group"] = case["workspace"].clone();
-                profile["template_prompt"] = json!(
-                    batch["template"]
-                        .as_str()
-                        .unwrap()
-                        .replace("{benchmark_task}", case["benchmark"].as_str().unwrap())
-                        .replace("{workspace_name}", case["workspace_name"].as_str().unwrap())
-                );
-                let result = self.start_batch_case(&url, &case, &profile, &mut batch, index);
+                let coordinator_url = batch["profile_config"]["coordinator_url"].as_str().ok_or("profile has no coordinator_url")?.to_owned();
+                let result = self.start_batch_case(&url, &coordinator_url, &case, &mut batch, index);
                 match result {
                     Ok(run_id) => {
                         batch["cases"][index]["run_id"] = json!(run_id);
@@ -339,16 +257,13 @@ impl Service {
     fn start_batch_case(
         &self,
         url: &str,
+        coordinator_url: &str,
         case: &Value,
-        profile: &Value,
         batch: &mut Value,
         index: usize,
     ) -> Result<String> {
-        let directory = Path::new(case["directory"].as_str().ok_or("missing directory")?);
-        let documents = workspace_documents(Path::new(case["workspace"].as_str().ok_or("missing workspace")?), &case["settings"])?;
-        fs::create_dir(directory)?;
-        for (filename, text) in documents { fs::write(directory.join(filename), text)?; }
-        let mut workflows = self.workflows.lock().unwrap();
+        let directory = case["directory"].as_str().ok_or("missing directory")?;
+        let root = case["workspace"].as_str().ok_or("missing workspace")?;
         let db = self.db();
         let campaign = db.campaign(case["campaign_id"].as_str().ok_or("missing campaign")?)?;
         let mut run = Run::new(&campaign, case["workspace"].as_str().unwrap(), assigned(case, "inspiration")?, assigned(case, "dataset")?);
@@ -366,14 +281,22 @@ impl Service {
         batch["cases"][index]["started_at_ms"] = json!(now);
         db.save_batch(batch)?;
         tx.commit()?;
-        match coordinator::launch(&self.root, url, &crate::service::started(&self.admin, &campaign, &run, &token), profile) {
-            Ok(child) => {
-                workflows.insert(run.id.clone(), child);
+        drop(db);
+        let output = self.root.join("deliveries").join(&run.id);
+        let callback = format!("{url}/v1/runs/{}/coordinator/{}", run.id, crate::service::callback_secret(&self.admin, &run.id));
+        match coordinator::start(coordinator_url, root, directory, &prompts::builder(&campaign, &run), &output, &callback) {
+            Ok(session) => {
+                record["session"] = json!(session);
+                record["coordinator_url"] = json!(coordinator_url);
+                record["deadline_ms"] = json!(run.deadline_ms);
+                self.db().save_workflow(&run.id, &record)?;
+                batch["cases"][index]["session"] = json!(session);
+                self.workflows.lock().unwrap().insert(run.id.clone(), coordinator::Workflow { url: coordinator_url.to_owned(), session, deadline_ms: run.deadline_ms });
             }
             Err(error) => {
                 record["status"] = json!("failed");
                 record["error"] = json!(error.to_string());
-                db.save_workflow(&run.id, &record)?;
+                self.db().save_workflow(&run.id, &record)?;
             }
         }
         Ok(run.id)
@@ -404,13 +327,11 @@ impl Service {
         let mut workflows = self.workflows.lock().unwrap();
         let db = self.db();
         let mut batch = db.batch(id)?;
+        let mut sessions = Vec::new();
         for case in batch["cases"].as_array_mut().ok_or("invalid cases")? {
             if case["status"] == "running" {
                 let run_id = case["run_id"].as_str().unwrap();
-                if let Some(workflow) = workflows.remove(run_id) {
-                    workflow.child.tree.stop();
-                }
-                coordinator::stop_workspace_tasks(&self.root, run_id)?;
+                sessions.extend(workflows.remove(run_id));
                 let mut record = db.workflow(run_id)?.ok_or("missing workflow")?;
                 record["status"] = json!("stopped");
                 record["ended_at_ms"] = json!(now_ms());
@@ -427,6 +348,10 @@ impl Service {
         batch["ended_at_ms"] = json!(now_ms());
         db.save_batch(&batch)?;
         drop(db);
+        drop(workflows);
+        for workflow in sessions {
+            coordinator::stop(&workflow.url, &workflow.session)?;
+        }
         self.close_dispatched_campaigns(&batch)?;
         Ok(public(&batch))
     }
@@ -435,17 +360,6 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn batches_check_only_the_planner_agent_they_launch() {
-        for planner in ["sol_6_1_light", "sol_6_1_medium"] {
-            assert!(allowed_agents(&json!({"planner":planner,"worker":"anything the coordinator accepts"})));
-            assert!(allowed_agents(&json!({"planner":planner})));
-        }
-        for invalid in [Value::Null, json!("sol_light"), json!("luna_6_high"), json!("claude_haiku_5_5_low")] {
-            assert!(!allowed_agents(&json!({"planner":invalid,"worker":"sol_6_1_light"})));
-        }
-    }
 
     #[test]
     fn shuffle_is_reproducible_and_preserves_all_workspace_benchmark_pairs() {
@@ -467,26 +381,17 @@ mod tests {
     fn default_cap_and_shuffled_queue_are_persisted_before_launch() {
         let root = crate::test_support::dir();
         let service = Service::open(root.path()).unwrap();
-        fs::write(root.path().join("coordinator-profiles.json"), json!({"fixture":{
-            
-            "session_command":["unused"],"session_planner_command":["unused"],"coordinator_url":"http://127.0.0.1:1"}}).to_string()).unwrap();
+        fs::write(root.path().join("coordinator-profiles.json"), json!({"fixture":{"coordinator_url":"http://127.0.0.1:1"}}).to_string()).unwrap();
         let workspaces = root.path().join("workspaces");
         fs::create_dir(&workspaces).unwrap();
         let mut selected = Vec::new();
         for index in 0..16 {
             let path = workspaces.join(index.to_string());
             fs::create_dir(&path).unwrap();
-            let mut settings = json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","prompts":{},"limits":{"criteria":3}});
-            fs::write(path.join(LIMITS_FILE), r#"{"criteria":3}"#).unwrap();
-            for (role, filename) in [("project_planner","PROJECT_PLANNER.md"),("worker_protocol","WORKER_PROTOCOL.md")] {
-                fs::write(path.join(filename), "Selected fixture instructions.").unwrap();
-                settings["prompts"][role] = json!({"candidate":"fixture.md","sha256":format!("{:x}",Sha256::digest(b"Selected fixture instructions."))});
-            }
+            let settings = json!({"planner":"sol_6_1_light","worker":"sol_6_1_light","limits":{"criteria":3}});
             selected.push(json!({"path":path,"settings":settings}));
         }
-        let template = root.path().join("template.txt");
-        fs::write(&template, format!("Task {{benchmark_task}} Workspace: {}",workspaces.join("{workspace_name}").display())).unwrap();
-        let batch = service.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
+        let batch = service.create_batch(json!({"profile":"fixture","workspace_root":workspaces,
             "workspaces":selected,"order_seed":960,"task_configs":{"maze_game":{"follow_ups":["Second request."]},"ml_predictor":{"ml_python":std::env::current_exe().unwrap()}}})).unwrap();
         assert_eq!(batch["max_parallel"],8);
         assert_eq!(batch["order_seed"],960);
@@ -509,10 +414,8 @@ mod tests {
         let only = workspaces.join("maze-only");
         fs::create_dir(&only).unwrap();
         let mut single = selected[0].clone();
-        for filename in ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"] { fs::write(only.join(filename), "Selected fixture instructions.").unwrap(); }
-        fs::write(only.join(LIMITS_FILE), r#"{"criteria":3}"#).unwrap();
         single["path"] = json!(only);
-        let maze = reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
+        let maze = reopened.create_batch(json!({"profile":"fixture","workspace_root":workspaces,
             "workspaces":[single],"benchmarks":["maze_game"],"task_configs":{"maze_game":{"follow_ups_file":follow_ups}}})).unwrap();
         assert_eq!(maze["cases"].as_array().unwrap().len(),1);
         assert_eq!(maze["cases"][0]["benchmark"],"maze_game");
@@ -520,11 +423,9 @@ mod tests {
         assert_eq!((campaign.config.development_seconds, campaign.config.judge_seconds, campaign.config.follow_ups.len()), (1800, 600, 2));
         let missing = workspaces.join("maze-missing");
         fs::create_dir(&missing).unwrap();
-        for filename in ["PROJECT_PLANNER.md", "WORKER_PROTOCOL.md"] { fs::write(missing.join(filename), "Selected fixture instructions.").unwrap(); }
-        fs::write(missing.join(LIMITS_FILE), r#"{"criteria":3}"#).unwrap();
         let mut unconfigured = selected[0].clone();
         unconfigured["path"] = json!(missing);
-        assert!(reopened.create_batch(json!({"profile":"fixture","template_path":template,"workspace_root":workspaces,
+        assert!(reopened.create_batch(json!({"profile":"fixture","workspace_root":workspaces,
             "workspaces":[unconfigured],"benchmarks":["maze_game"]})).unwrap_err().to_string().contains("follow_ups"));
     }
 }

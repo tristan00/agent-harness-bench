@@ -26,7 +26,6 @@ impl Store {
           CREATE TABLE IF NOT EXISTS reports(run_id TEXT PRIMARY KEY REFERENCES runs(id), data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS games(campaign_id TEXT NOT NULL REFERENCES campaigns(id), number INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(campaign_id,number));
           CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, at_ms INTEGER NOT NULL, run_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL);
-          CREATE TABLE IF NOT EXISTS iterations(run_id TEXT NOT NULL REFERENCES runs(id), number INTEGER NOT NULL, digest TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(run_id,number));
           CREATE TABLE IF NOT EXISTS workflows(run_id TEXT PRIMARY KEY REFERENCES runs(id), data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY, data TEXT NOT NULL);
           PRAGMA user_version=3; COMMIT;")?;

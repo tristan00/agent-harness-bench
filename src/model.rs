@@ -32,12 +32,30 @@ pub struct Config {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub ml_python: String,
 }
+pub const TIME_LIMITS: [&str; 5] = ["development_seconds", "judge_seconds", "score_seconds", "build_seconds", "predict_seconds"];
+
+pub fn development_seconds(benchmark: Benchmark) -> u64 {
+    match benchmark {
+        Benchmark::Chess960 => 1200,
+        Benchmark::DatasetDashboard | Benchmark::MlPredictor => 900,
+        Benchmark::GameBuild | Benchmark::MazeGame => 1800,
+    }
+}
+
+pub fn judge_seconds(benchmark: Benchmark) -> u64 {
+    match benchmark {
+        Benchmark::MazeGame => 600,
+        Benchmark::MlPredictor => 180,
+        Benchmark::Chess960 | Benchmark::GameBuild | Benchmark::DatasetDashboard => 300,
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             benchmark: Benchmark::Chess960,
-            development_seconds: 600,
-            judge_seconds: 300,
+            development_seconds: development_seconds(Benchmark::Chess960),
+            judge_seconds: judge_seconds(Benchmark::Chess960),
             score_seconds: 120,
             build_seconds: 120,
             seed: crate::random_seed(),
@@ -61,19 +79,12 @@ impl Config {
         if let Some(file) = value.as_object_mut().unwrap().remove("follow_ups_file") {
             value["follow_ups"] = serde_json::from_str(&std::fs::read_to_string(file.as_str().ok_or("follow_ups_file must be a path")?)?)?;
         }
-        let development = match benchmark {
-            Benchmark::Chess960 => 600,
-            Benchmark::DatasetDashboard | Benchmark::MlPredictor => 900,
-            Benchmark::GameBuild | Benchmark::MazeGame => 1800,
-        };
+        if let Some(key) = TIME_LIMITS.iter().find(|key| value.get(**key).is_some()) {
+            return Err(format!("time limits are fixed per benchmark; remove {key} from the task configuration").into());
+        }
         value["benchmark"] = serde_json::json!(benchmark);
-        value.as_object_mut().unwrap().entry("development_seconds").or_insert(development.into());
-        if benchmark == Benchmark::MazeGame {
-            value.as_object_mut().unwrap().entry("judge_seconds").or_insert(600.into());
-        }
-        if benchmark == Benchmark::MlPredictor {
-            value.as_object_mut().unwrap().entry("judge_seconds").or_insert(180.into());
-        }
+        value["development_seconds"] = development_seconds(benchmark).into();
+        value["judge_seconds"] = judge_seconds(benchmark).into();
         let config: Self = serde_json::from_value(value)?;
         config.validate()?;
         Ok(config)
@@ -366,4 +377,29 @@ impl EdaScore {
         Ok(())
     }
     pub fn total(&self) -> u16 { self.criteria().iter().map(|c| u16::from(c.score)).sum() }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn time_limits_come_only_from_the_benchmark() {
+        let follow = serde_json::json!({"follow_ups":["Next."]});
+        let ml = serde_json::json!({"ml_python":std::env::current_exe().unwrap()});
+        for (benchmark, value, development, judge) in [
+            (Benchmark::Chess960, serde_json::json!({}), 1200, 300),
+            (Benchmark::GameBuild, serde_json::json!({}), 1800, 300),
+            (Benchmark::DatasetDashboard, serde_json::json!({}), 900, 300),
+            (Benchmark::MazeGame, follow.clone(), 1800, 600),
+            (Benchmark::MlPredictor, ml.clone(), 900, 180),
+        ] {
+            let config = Config::new(benchmark, value).unwrap();
+            assert_eq!((config.development_seconds, config.judge_seconds), (development, judge));
+        }
+        for key in TIME_LIMITS {
+            let error = Config::new(Benchmark::Chess960, serde_json::json!({key: 1200})).unwrap_err().to_string();
+            assert!(error.contains(key), "{error}");
+        }
+    }
 }

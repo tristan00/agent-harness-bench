@@ -39,11 +39,6 @@ def model_effort(selection):
     return agent["model"], agent.get("effort", "")
 
 
-def workspace_settings(value):
-    resolve(value.get("planner"))
-    return value
-
-
 def command_arguments(selection, retired=False):
     agent = resolve(selection, retired=retired)
     if agent["harness"] != "codex":
@@ -74,8 +69,3 @@ def claude_arguments(agent):
     if agent.get("effort"):
         argv += ["--effort", agent["effort"]]
     return argv
-
-
-def planner_command(command, selection):
-    agent = resolve(selection)
-    return [arg.replace("{model}", agent["model"]).replace("{effort}", agent.get("effort", "")) for arg in command]

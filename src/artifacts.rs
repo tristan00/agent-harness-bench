@@ -8,6 +8,46 @@ use std::{
 };
 
 pub const MAX_UPLOAD: usize = 48 * 1024 * 1024;
+const SKIPPED: [&str; 8] = [".git", "target", "node_modules", ".venv", "venv", "__pycache__", ".harness", ".env"];
+
+pub fn snapshot(directory: &Path) -> Result<Submission> {
+    let manifest = fs::read(directory.join("harness.json")).map_err(|_| "the delivery has no harness.json manifest at its root")?;
+    let mut manifest: serde_json::Value = serde_json::from_slice(&manifest).map_err(|error| format!("harness.json is not valid JSON: {error}"))?;
+    if let Some(fields) = manifest.as_object_mut() {
+        fields.retain(|key, _| ["run", "predict", "build", "env", "source_files", "ui"].contains(&key.as_str()));
+    }
+    let manifest: Manifest = serde_json::from_value(manifest).map_err(|error| format!("harness.json is not a valid manifest: {error}"))?;
+    let mut files = Vec::new();
+    collect(directory, directory, &mut files)?;
+    Ok(Submission { manifest, files })
+}
+
+fn collect(root: &Path, directory: &Path, files: &mut Vec<FileData>) -> Result<()> {
+    let mut entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let kind = entry.file_type()?;
+        let relative = entry.path().strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+        if kind.is_symlink() {
+            return Err(format!("symlinks cannot be delivered: {relative}").into());
+        }
+        if SKIPPED.contains(&name.as_str()) || name.ends_with(".pyc") || name.ends_with(".log") || name.starts_with(".env.") {
+            continue;
+        }
+        if kind.is_dir() {
+            collect(root, &entry.path(), files)?;
+            continue;
+        }
+        let bytes = fs::read(entry.path())?;
+        let (text, base64) = match String::from_utf8(bytes) {
+            Ok(text) => (Some(text), None),
+            Err(error) => (None, Some(STANDARD.encode(error.into_bytes()))),
+        };
+        files.push(FileData { path: relative, text, base64, executable: false });
+    }
+    Ok(())
+}
 pub const MAX_BYTES: usize = 32 * 1024 * 1024;
 
 pub fn safe_path(value: &str) -> Result<()> {
@@ -263,5 +303,23 @@ mod tests {
             read(root.path(), &a.id).unwrap().files[0].text.as_deref(),
             Some("# comment\n\nprint('x')\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    #[test]
+    fn deliveries_ignore_unused_manifest_fields_and_skip_generated_trees() {
+        let root = crate::test_support::dir();
+        let folder = root.path().join("delivery");
+        std::fs::create_dir_all(folder.join("node_modules")).unwrap();
+        std::fs::write(folder.join("harness.json"), r#"{"name":"Game","version":"1.0","run":["python","main.py"],"ui":"web"}"#).unwrap();
+        std::fs::write(folder.join("main.py"), "print(1)").unwrap();
+        std::fs::write(folder.join("node_modules").join("x.js"), "x").unwrap();
+        let submission = super::snapshot(&folder).unwrap();
+        assert_eq!((submission.manifest.run.clone(), submission.manifest.ui.clone()), (vec!["python".to_owned(), "main.py".to_owned()], Some("web".to_owned())));
+        assert_eq!(submission.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["harness.json", "main.py"]);
+        std::fs::write(folder.join("harness.json"), "not json").unwrap();
+        assert!(super::snapshot(&folder).unwrap_err().to_string().contains("not valid JSON"));
     }
 }

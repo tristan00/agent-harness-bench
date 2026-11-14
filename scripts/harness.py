@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Dependency-free client for the Rust evaluator and process helpers for the scoring runner."""
 import argparse
-import base64
-import fnmatch
 import json
 import os
 from pathlib import Path
@@ -38,39 +36,6 @@ class Client:
             raise ApiError(error.code, error.read().decode(errors="replace")) from error
 
 
-DEFAULT_EXCLUDES = {".git", "target", "node_modules", ".venv", "venv", "__pycache__", ".harness", ".env"}
-
-
-def snapshot(workspace):
-    workspace = Path(workspace).resolve()
-    manifest = json.loads((workspace / "harness.json").read_text(encoding="utf-8"))
-    ignores = []
-    ignorefile = workspace / ".harnessignore"
-    if ignorefile.exists():
-        ignores = [s.strip() for s in ignorefile.read_text().splitlines() if s.strip() and not s.startswith("#")]
-    files = []
-    # Prune generated dependency/build trees without walking through them.
-    for directory, folders, names in os.walk(workspace, followlinks=False):
-        folders[:] = sorted(n for n in folders if n not in DEFAULT_EXCLUDES and not (Path(directory) / n).is_symlink())
-        for name in sorted(names):
-            path = Path(directory) / name
-            relative = path.relative_to(workspace).as_posix()
-            if name in DEFAULT_EXCLUDES or name.endswith((".pyc", ".log")) or name.startswith(".env.") or any(fnmatch.fnmatch(relative, p) for p in ignores):
-                continue
-            if path.is_symlink():
-                raise ValueError(f"symlinks cannot be submitted: {relative}")
-            before = path.stat()
-            data = path.read_bytes()
-            after = path.stat()
-            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                raise ValueError(f"file changed while snapshotting: {relative}; retrying next checkpoint")
-            item = {"path": relative, "executable": bool(before.st_mode & 0o111)}
-            try:
-                item["text"] = data.decode("utf-8")
-            except UnicodeDecodeError:
-                item["base64"] = base64.b64encode(data).decode()
-            files.append(item)
-    return {"manifest": manifest, "files": files}
 
 
 def write_json(path, value):
@@ -162,7 +127,7 @@ def agent_environment(**values):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.environ.get("HARNESS_URL", "http://127.0.0.1:8741"))
-    parser.add_argument("--token", default=os.environ.get("HARNESS_RUN_TOKEN") or os.environ.get("HARNESS_API_TOKEN", ""))
+    parser.add_argument("--token", default=os.environ.get("HARNESS_API_TOKEN", ""))
     parser.add_argument("--token-file", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("benchmark-batch", help="Queue every benchmark for every supplied workspace").add_argument("config", type=Path)
@@ -171,10 +136,6 @@ def main():
     batch_score = sub.add_parser("batch-score", help="Run scoring through one API call and print the complete JSON report")
     batch_score.add_argument("batch")
     batch_score.add_argument("--max-judges", type=int, default=2)
-    sub.add_parser("task", help="Fetch this planner's assigned benchmark").add_argument("run", nargs="?", default=os.environ.get("HARNESS_RUN_ID"))
-    submit = sub.add_parser("submit")
-    submit.add_argument("run")
-    submit.add_argument("workspace", type=Path)
     args = parser.parse_args()
     client = Client(args.url, args.token_file.read_text().strip() if args.token_file else args.token)
     if args.command == "benchmark-batch":
@@ -183,14 +144,8 @@ def main():
         result = client.request("GET", f"/v1/benchmark-batches/{args.batch}")
     elif args.command == "batch-stop":
         result = client.request("POST", f"/v1/benchmark-batches/{args.batch}/stop", {})
-    elif args.command == "batch-score":
-        result = client.request("POST", f"/v1/benchmark-batches/{args.batch}/score", {"max_judges": args.max_judges}, timeout=None)
-    elif args.command == "task":
-        if not args.run:
-            parser.error("task requires a run id or HARNESS_RUN_ID")
-        result = client.request("GET", f"/v1/runs/{args.run}/task")
     else:
-        result = client.request("POST", f"/v1/runs/{args.run}/submissions", snapshot(args.workspace))
+        result = client.request("POST", f"/v1/benchmark-batches/{args.batch}/score", {"max_judges": args.max_judges}, timeout=None)
     sys.stdout.reconfigure(encoding="utf-8")
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

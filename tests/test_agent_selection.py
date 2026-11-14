@@ -37,22 +37,6 @@ class AgentSelection(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         selection.resolve(name, family)
 
-    def test_only_the_planner_is_checked_in_workspace_settings(self):
-        previous = os.environ.get("AGENT_FAMILY")
-        os.environ["AGENT_FAMILY"] = "codex"
-        try:
-            settings = {"planner": "sol_6_1_light", "worker": "not validated here"}
-            self.assertIs(selection.workspace_settings(settings), settings)
-            for planner in ("luna_6_high", "claude_haiku_5_5_low", None):
-                with self.assertRaises(ValueError):
-                    selection.workspace_settings({"planner": planner, "worker": "sol_6_1_light"})
-            self.assertEqual(selection.command_arguments("sol_6_1_light"), ["--model", "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"'])
-        finally:
-            if previous is None:
-                os.environ.pop("AGENT_FAMILY", None)
-            else:
-                os.environ["AGENT_FAMILY"] = previous
-
     def test_claude_launch_strips_host_session_and_sets_model_effort(self):
         env = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "s", "CLAUDE_AGENT_SDK_VERSION": "1", "PATH": "p", "ANTHROPIC_API_KEY": "k"}
         self.assertEqual(selection.claude_environment(env), {"PATH": "p", "ANTHROPIC_API_KEY": "k"})

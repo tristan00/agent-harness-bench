@@ -203,12 +203,11 @@ def main():
 def score_batch(args, output, config):
     client = Client(args.url, (args.data / "admin-token").read_text().strip())
     batch = client.request("GET", f"/v1/benchmark-batches/{args.batch}")["batch"]
+    coordinator_url = args.coordinator_url or read(args.data / "coordinator-profiles.json")[batch["profile"]]["coordinator_url"]
+    coordinator = Client(coordinator_url)
     if args.coordinator_data is None:
-        coordinator_url = args.coordinator_url
-        if not coordinator_url:
-            profiles = read(args.data / "coordinator-profiles.json")
-            coordinator_url = profiles[batch["profile"]]["coordinator_url"]
-        args.coordinator_data = Path(Client(coordinator_url).request("GET", "/api/state")["dataDirectory"])
+        args.coordinator_data = Path(coordinator.request("GET", "/api/state")["dataDirectory"])
+    session = lambda case: coordinator.request("GET", f'/api/sessions/{case["session"]}') if case.get("session") else None
     deferred = [case for case in batch["cases"] if case["benchmark"] not in config["benchmark_weights"]]
     batch["cases"] = [case for case in batch["cases"] if case["benchmark"] in config["benchmark_weights"]]
     batch["campaigns"] = {name: campaign for name, campaign in batch["campaigns"].items() if name in config["benchmark_weights"]}
@@ -229,7 +228,7 @@ def score_batch(args, output, config):
         metrics = []
         for case in batch["cases"]:
             run = client.request("GET", f'/v1/runs/{case["run_id"]}')["run"] if case["run_id"] else None
-            metrics.append(collect(case, run, args.data, args.coordinator_data))
+            metrics.append(collect(case, run, args.data, args.coordinator_data, session(case)))
         write_json(output / "metrics.json", metrics)
     for campaign_id in batch["campaigns"].values():
         if not any(case["campaign_id"] == campaign_id and case["run_id"] for case in batch["cases"]):
@@ -281,7 +280,7 @@ def score_batch(args, output, config):
     unscored = []
     for case in deferred:
         run = client.request("GET", f'/v1/runs/{case["run_id"]}') if case.get("run_id") else {}
-        unscored.append({"metrics":collect(case, run.get("run"), args.data, args.coordinator_data),
+        unscored.append({"metrics":collect(case, run.get("run"), args.data, args.coordinator_data, session(case)),
                          "completed_requests":run.get("completed_requests", [])})
     report = {"schema_version":"benchmark-score-report.v2", "producer":"agent-harness-bench scoring utility",
               "score_generation":{"arithmetic":"deterministic code", "quality_ratings":"independent judge sessions",

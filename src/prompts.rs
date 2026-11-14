@@ -1,8 +1,19 @@
 use crate::model::{Benchmark, Campaign, Run};
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "2026-11-13.v6";
-const SUBMIT: &str = "Submit complete versions with an HTTP POST to $HARNESS_URL/v1/runs/$HARNESS_RUN_ID/submissions with the header \"Authorization: Bearer $HARNESS_RUN_TOKEN\" (all three are environment variables). The JSON body is {\"manifest\":{\"run\":[...],\"build\":null,\"env\":{},\"source_files\":[],\"ui\":null},\"files\":[{\"path\":\"relative/path\",\"text\":\"...\"}]}; use \"base64\" in place of \"text\" for binary files. Each submission replaces the previous one, so include every file it needs.";
+pub const VERSION: &str = "2026-11-14.v11";
+pub const DASHBOARD_VERSION: &str = "dataset-dashboard.v7";
+
+pub fn version(benchmark: Benchmark) -> &'static str {
+    match benchmark {
+        Benchmark::Chess960 | Benchmark::GameBuild => VERSION,
+        Benchmark::DatasetDashboard => DASHBOARD_VERSION,
+        Benchmark::MlPredictor => ML_VERSION,
+        Benchmark::MazeGame => MAZE_VERSION,
+    }
+}
+pub const DELIVERABLE: &str = "submission";
+const SUBMIT: &str = "Keep the deliverable in the folder named submission inside your workspace, with its manifest in harness.json at the folder root. Paths are relative to that folder, and it must run on its own without the rest of the workspace.";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Inspiration {
@@ -60,8 +71,8 @@ pub fn builder(c: &Campaign, run: &Run) -> String {
 
 fn dashboard(assignment: &crate::datasets::Assignment) -> String {
     format!(
-        "BENCHMARK: Dataset dashboard\nPrompt version: dataset-dashboard.v2\nDataset assignment:\n{}\n\nDownload the assigned dataset and build a working interactive UI dashboard that describes and helps people understand it. Represent the data completely and correctly. Explore the actual data and organize meaningful views into a coherent, understandable information architecture. Use concise labels and visual explanations, minimize prose, and use animation where it improves understanding or interaction. Give the dashboard a distinctive design suited to the data. Keep loading, interactions and rendering responsive.\n\nDeliver a runnable web dashboard with harness.json containing run (an argv array), optional build and env, and ui=\"web\". Bind HTTP to 127.0.0.1 at HARNESS_PORT and serve the dashboard at /. Once ready, print {{\"ready\":true}} on stdout and flush. Keep stdout for JSONL protocol messages and logs on stderr. Accept JSONL requests {{\"id\":1,\"action\":\"describe\",\"params\":{{}}}} and observe, echoing id with a result that documents the dashboard and its data coverage. Keep serving the UI until stopped.\n\n{SUBMIT} Include source, required UI assets, reproducible data preparation code, and the data needed to run the submitted dashboard without a fresh network download. Compact derived data is allowed; disclose coverage, aggregation, exclusions and missing values. The submission limit is 32 MiB of decoded files. Leave raw downloads and generated dependencies out of the submission. In a short README record source URLs, download SHA-256 hashes, row counts, preparation steps, launch instructions and known limitations. Keep raw downloads in your workspace. The frozen submission will be launched later in a separate directory.\n",
-        serde_json::to_string_pretty(assignment).expect("serializable assignment")
+        "Dataset:\n{}\n\nDownload this dataset and build an interactive web dashboard that helps people understand it.\n\nDeliver a runnable web dashboard with harness.json containing run (an argv array), optional build and env, and ui=\"web\". Bind HTTP to 127.0.0.1 at HARNESS_PORT and serve the dashboard at /. Once ready, print {{\"ready\":true}} on stdout and flush. Keep stdout for JSONL protocol messages and logs on stderr. Accept JSONL requests {{\"id\":1,\"action\":\"describe\",\"params\":{{}}}} and observe, echoing id with a result that documents the dashboard and its data coverage.\n\n{SUBMIT} Include source, required UI assets, reproducible data preparation code, and the data needed to run the dashboard without a fresh network download. Compact derived data is allowed. Keep the folder under 32 MiB and leave raw downloads and generated dependencies out of it. In a short README record source URLs, download SHA-256 hashes, row counts, preparation steps, coverage, aggregation, exclusions, missing values, launch instructions and known limitations.\n",
+        serde_json::to_string_pretty(&serde_json::json!({"name":assignment.dataset.name,"urls":assignment.dataset.urls,"instructions":assignment.dataset.instructions})).expect("serializable dataset")
     )
 }
 fn theme_words(seed: u64) -> Vec<String> {
@@ -144,17 +155,16 @@ fn theme_words(seed: u64) -> Vec<String> {
 
 fn task(c: &Campaign, run: &Run) -> String {
     let shared = format!(
-        "{SUBMIT} The last complete version accepted is frozen automatically and evaluated. Submit all source and required assets with a manifest containing run (an argv array), optional build (an argv array), optional env, and source_files for unusual language extensions. Build commands run against the frozen files, with a separate {} second compilation limit; all dependencies must already be available on the evaluation host or included. Paths are relative to your submitted directory. Do not assume your development workspace is used at evaluation time. The implementation language and approach are your choice. A process must print {{\"ready\":true}} followed by a newline within 5 seconds of launch. Use stdout only for newline-delimited JSON protocol responses, flush each response, and send logs to stderr. Each request carries an integer id; echo it unchanged in the response. Protocol lines are limited to 64 KiB.\n",
+        "{SUBMIT} The manifest holds run (an argv array), optional build (an argv array) and optional env. Builds may take up to {} seconds and may only use what is installed on this machine or included in the folder. The program prints {{\"ready\":true}} and a newline within 5 seconds of starting, uses stdout only for newline-delimited JSON responses of at most 64 KiB, flushes each one, echoes each request's integer id unchanged, and logs to stderr.\n",
         c.config.build_seconds
     );
     if c.config.benchmark == Benchmark::Chess960 {
         format!(
-            "BENCHMARK: Chess960 move selector\nPrompt version: {VERSION}\n{shared}\nPrebuilt engines such as stockfish are banned.\nYou may use the standalone tooling under `D:\\harness_work\\bench_tooling` for development if you choose. It is separate from the benchmark harness and contains only reusable Chess960 rules tooling.\n\nBuild a move-selection function with the logical signature pick_move(fen: string, allowed_moves: list[string]) -> string, and an executable wrapper for it. Input example: {{\"id\":1,\"fen\":\"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1\",\"allowed_moves\":[\"e2e4\",\"g1f3\"]}}. Output example: {{\"id\":1,\"move\":\"e2e4\"}}. The evaluator supplies Shredder-FEN and the complete legal move list. Move strings use UCI960: castling is encoded as the king moving to its rook's origin square. Select exactly one supplied move. Every response has a strict 100 ms wall-clock limit including protocol I/O, excluding process startup. An error, invalid response, crash, illegal move, or timeout forfeits that game. The evaluator owns all chess state and rules. The process persists for a game and is restarted for each game.\nYour frozen solution enters a seeded, color-balanced round-robin tournament against the campaign's pool. Every entry starts at {} Elo, K={}. The reported quality metrics are Elo change and nonblank physical source lines (including comments). Draws are claimed automatically at threefold repetition or 100 halfmoves; the configured {}-ply game cap is a draw.\n",
-            c.config.initial_elo, c.config.elo_k, c.config.max_plies
+            "Build a Chess960 move selector: a program that receives a position and its legal moves and replies with one of those moves. Input example: {{\"id\":1,\"fen\":\"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1\",\"allowed_moves\":[\"e2e4\",\"g1f3\"]}}. Output example: {{\"id\":1,\"move\":\"e2e4\"}}. Each request supplies Shredder-FEN and the complete legal move list. Move strings use UCI960: castling is encoded as the king moving to its rook's origin square. Select exactly one supplied move. Every response has a strict 100 ms wall-clock limit including protocol I/O, excluding process startup. The process persists for a game and is restarted for each game. Prebuilt engines such as stockfish are banned. You may use the Chess960 rules tooling under `D:\\harness_work\\bench_tooling` during development.\n{shared}",
         )
     } else {
         format!(
-            "BENCHMARK: Game creation\nPrompt version: {VERSION}\n{shared}\nCreate a functional, original game combining elements from {}, inspired by some or all of these themes: {}. Aim for rich, original gameplay with integrated systems, visuals that hold up next to published games, and a game whose depth can actually be reached and played. Make it efficient, smooth, light on resources and playable with both mouse and keyboard on this machine. Provide a usable interface; consider settings, saves and loads, fullscreen and windowed play. Keep producing working incremental versions.\nAlso expose fast programmatic gameplay through the same persistent JSONL process: accept {{\"id\":1,\"action\":\"describe\",\"params\":{{}}}} and return {{\"id\":1,\"result\":...}}. Support describe (action names and parameter documentation), observe (current state), reset (new game), and step (advance simulation, supporting many ticks efficiently). Add your own gameplay actions. Document mouse/keyboard controls and API semantics in a README. A web game must set manifest ui=\"web\", bind HTTP to 127.0.0.1 at the port in HARNESS_PORT, serve its interface at /, and have it ready before printing the readiness line. A desktop game sets ui=\"native\" and opens its playable window. GUI and API must control the same simulation.\n",
+            "Create an original game combining elements from {}, inspired by some or all of these themes: {}. Make it something worth playing, with mouse and keyboard on this machine.\nAlso expose fast programmatic gameplay through the same persistent JSONL process: accept {{\"id\":1,\"action\":\"describe\",\"params\":{{}}}} and return {{\"id\":1,\"result\":...}}. Support describe (action names and parameter documentation), observe (current state), reset (new game), and step (advance simulation, supporting many ticks efficiently). Add your own gameplay actions. Document mouse/keyboard controls and API semantics in a README. A web game must set manifest ui=\"web\", bind HTTP to 127.0.0.1 at the port in HARNESS_PORT, serve its interface at /, and have it ready before printing the readiness line. A desktop game sets ui=\"native\" and opens its playable window. GUI and API must control the same simulation.\n{shared}",
             listed(genres(run)), listed(themes(run))
         )
     }
@@ -169,12 +179,12 @@ fn game_judge(c: &Campaign, run: &Run) -> String {
     )
 }
 
-pub const ML_VERSION: &str = "ml-predictor.v1";
+pub const ML_VERSION: &str = "ml-predictor.v5";
 
 fn ml(c: &Campaign, task: &crate::ml::Task) -> String {
     let metric = crate::ml::metric_name(&task.metric);
     format!(
-        "BENCHMARK: ML predictor\nPrompt version: {ML_VERSION}\nTask assignment:\nProblem: {}\nTarget: {}\nTraining data: {}\nMetric: {metric}\n\nBuild a lightweight, fast model that predicts {} for unseen data from this dataset, along with an exploratory data analysis report.\n\nUse only the training data named in the assignment. Do not download or use this dataset's test data, any other copy of the dataset, or published results for it.\n\nDeliver:\n- the trained model and the code that trains it from the training data;\n- an EDA report;\n- a prediction command: add \"predict\" to your manifest as an argv array containing {{input}} and {{output}}. It reads {} and writes {}. It must run from the submitted files alone, without network access, within {} seconds.\n\nPython 3 with numpy, pandas and scikit-learn is available at {}; the prediction command runs with that interpreter first on PATH.\n\n{SUBMIT} The submission limit is 32 MiB of decoded files. Leave the downloaded data out of the submission.\n\nPredictions are evaluated on held-out data you never see, using {metric}.\n",
+        "Problem: {}\nTarget: {}\nTraining data: {}\nMetric: {metric}\n\nBuild a lightweight, fast model that predicts {} for unseen data from this dataset, along with an exploratory data analysis report.\n\nUse only the training data named above. Do not download or use this dataset's test data, any other copy of the dataset, or published results for it.\n\nDeliver:\n- the trained model and the code that trains it from the training data;\n- an EDA report;\n- a prediction command: add \"predict\" to your manifest as an argv array containing {{input}} and {{output}}. It reads {} and writes {}. It must run from the folder alone, without network access, within {} seconds.\n\nPython 3 with numpy, pandas and scikit-learn is available at {}; the prediction command runs with that interpreter first on PATH.\n\n{SUBMIT} Keep the folder under 32 MiB and leave the downloaded data out of it.\n",
         task.problem, task.target, task.train.join(" and "), task.target, task.input_format, task.output_format, c.config.predict_seconds, c.config.ml_python
     )
 }
@@ -197,12 +207,12 @@ pub fn judge(c: &Campaign, run: &Run, completed: usize) -> String {
     )
 }
 
-pub const MAZE_VERSION: &str = "maze-game.v2";
+pub const MAZE_VERSION: &str = "maze-game.v5";
 pub const MAZE_REQUEST: &str = "Build a simple maze game in Python, shown from a third-person view of the maze. The player's character collects rewards or tries to escape the maze while enemies chase it. Use your own original title, characters and art.";
 
 pub fn maze(c: &Campaign, themes: &[String]) -> String {
     format!(
-        "BENCHMARK: Maze game\nPrompt version: {MAZE_VERSION}\nTHEME WORDS: {}\n\n{MAZE_REQUEST} Draw its setting, characters and look from all three theme words.\n\n{SUBMIT} Submit whenever you like; the last accepted version is evaluated. A submission holds all source and assets plus a manifest with run (an argv array) and optional build (an argv array) and env. Builds get {} seconds and may only use what is installed on this machine or submitted. On launch, print {{\"ready\":true}} within 5 seconds, then answer newline-delimited JSON requests on stdin and stdout, echoing each request's integer id; send logs to stderr. Support describe, observe, reset and step plus your own gameplay actions in the same process that runs the interface. A web game sets ui=\"web\" and serves / on 127.0.0.1 at HARNESS_PORT before printing ready; a desktop game sets ui=\"native\". Document controls and the API in a README.\n",
+        "Theme words: {}\n\n{MAZE_REQUEST} Draw its setting, characters and look from all three theme words.\n\n{SUBMIT} The manifest holds run (an argv array), optional build (an argv array) and optional env. Builds get {} seconds and may only use what is installed on this machine or included in the folder. On launch, print {{\"ready\":true}} within 5 seconds, then answer newline-delimited JSON requests on stdin and stdout, echoing each request's integer id; send logs to stderr. Support describe, observe, reset and step plus your own gameplay actions in the same process that runs the interface. A web game sets ui=\"web\" and serves / on 127.0.0.1 at HARNESS_PORT before printing ready; a desktop game sets ui=\"native\". Document controls and the API in a README.\n",
         themes.join(", "),
         c.config.build_seconds
     )
@@ -213,7 +223,7 @@ pub fn maze_requests(c: &Campaign) -> Vec<String> {
 }
 
 pub fn maze_follow_up(text: &str) -> String {
-    format!("{text} Submit the updated game when it is ready.")
+    format!("{text} Deliver the updated game when it is ready.")
 }
 
 pub fn maze_continue(text: &str) -> String {
