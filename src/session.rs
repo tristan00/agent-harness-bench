@@ -350,6 +350,17 @@ impl Runner {
     }
 }
 
+/// PATH and marker variable that route the planner's kill-by-name commands through the coordinator's kill guard.
+/// An older coordinator without the guard leaves the planner environment unchanged.
+fn kill_guard(coordinator: &Client) -> Vec<(String, Option<String>)> {
+    let Ok(guard) = coordinator.request("GET", "/api/kill-guard", None) else { return Vec::new() };
+    let (Some(dir), Some(variable)) = (guard["directory"].as_str(), guard["variable"].as_str()) else { return Vec::new() };
+    let current = env::var_os("PATH").unwrap_or_default();
+    let paths = std::iter::once(PathBuf::from(dir)).chain(env::split_paths(&current));
+    let Ok(path) = env::join_paths(paths) else { return Vec::new() };
+    vec![("PATH".into(), Some(path.to_string_lossy().into_owned())), (variable.into(), Some(dir.into()))]
+}
+
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
     value[name].as_str().ok_or_else(|| format!("launch request is missing {name}").into())
 }
@@ -398,6 +409,7 @@ pub fn run_session(launch_path: &Path, family: Option<&str>, pause: Duration) ->
     if handoff.is_some() {
         env.push(("HARNESS_PLANNER_SESSION".into(), Some(root.join("planner-session.json").to_string_lossy().into_owned())));
     }
+    env.extend(kill_guard(&coordinator));
     let progress = json!({"mode":"template","phase":"running","workspace":workspace_text,"coordinator_url":coordinator.url,"run_id":run_id});
     let mut runner = Runner { root, workspace: workspace.clone(), command, env, message: None, progress };
     let mut planner = runner.launch(None)?;
@@ -770,7 +782,10 @@ mod tests {
         let dir = crate::test_support::dir();
         let polls = Arc::new(Mutex::new(0));
         let count = polls.clone();
-        let (url, seen, server) = serve(move |_, _, _| {
+        let (url, seen, server) = serve(move |_, path, _| {
+            if path == "/api/kill-guard" {
+                return json!({});
+            }
             let mut count = count.lock().unwrap();
             *count += 1;
             let stage = if *count == 1 { "implementation" } else { "done" };
@@ -787,8 +802,9 @@ mod tests {
         assert_eq!(fs::read_to_string(launch.with_file_name("planner-prompt.txt")).unwrap(), "Fill maze_game");
         assert!(fs::read_to_string(launch.with_file_name("planner.log")).unwrap().contains("tests,"));
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].1, format!("/api/tasks?workspace={}", quote(&workspace.to_string_lossy())));
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].1, "/api/kill-guard");
+        assert_eq!(seen[1].1, format!("/api/tasks?workspace={}", quote(&workspace.to_string_lossy())));
         fs::write(workspace.join("extra.txt"), "x").unwrap();
         assert!(run_session(&launch, Some("codex"), Duration::from_millis(10)).unwrap_err().to_string().contains("only its instruction documents"));
     }
