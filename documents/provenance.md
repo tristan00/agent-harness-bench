@@ -4,9 +4,9 @@
 
 The reusable Chess960 tooling is maintained outside this benchmark in:
 
-`D:\harness_work\bench_tooling`
+[tristan00/bench_tooling](https://github.com/tristan00/bench_tooling), checked out locally at `D:\harness_work\bench_tooling`
 
-The benchmark depends on that standalone Rust crate by path. It retains the all-960-starts, perft, overlapping-castling, en-passant, promotion and draw tests. The Elo formula is implemented independently in this service with explicit double-forfeit handling.
+The benchmark depends on that standalone Rust crate as a git dependency; Cargo.lock pins the commit. It retains the all-960-starts, perft, overlapping-castling, en-passant, promotion and draw tests. The Elo formula is implemented independently in this service with explicit double-forfeit handling.
 
 The old project's rule-author restrictions do not apply to these benchmark entrants: the new preset prompt specifies only the input/output/runtime contract and evaluation rules, leaving implementation choices open.
 

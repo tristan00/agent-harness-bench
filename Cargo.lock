@@ -47,6 +47,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 [[package]]
 name = "bench-tooling"
 version = "0.1.0"
+source = "git+https://github.com/tristan00/bench_tooling?branch=main#0f8f7791cc4956ff334c3a76d6c9806267fbb6ad"
 dependencies = [
  "serde",
  "shakmaty",
