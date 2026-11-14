@@ -4,12 +4,15 @@ pub mod batch;
 pub mod chess;
 pub mod coordinator;
 pub mod datasets;
-pub mod engine;
+pub mod engine {
+    pub use bench_tooling::engine::*;
+}
 pub mod ml;
 pub mod model;
 pub mod process;
 pub mod prompts;
 pub mod service;
+pub mod session;
 pub mod scoring;
 pub mod storage;
 

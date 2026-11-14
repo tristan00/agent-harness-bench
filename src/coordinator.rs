@@ -72,6 +72,28 @@ pub fn argv(value: &Value) -> Result<Vec<String>> {
     Ok(args)
 }
 
+pub const BUILTIN: &str = "builtin";
+
+pub fn command(value: &Value, subcommand: &str) -> Result<Vec<String>> {
+    if value.is_null() || value == BUILTIN {
+        return Ok(vec![std::env::current_exe()?.to_string_lossy().into_owned(), subcommand.to_owned()]);
+    }
+    argv(value)
+}
+
+pub fn failure(root: &Path, id: &str, code: Option<i32>) -> String {
+    let log = fs::read(root.join("coordinator").join(id).join("controller.log")).unwrap_or_default();
+    let text = String::from_utf8_lossy(&log);
+    let text = text.trim();
+    let start = text.char_indices().rev().nth(1999).map_or(0, |(index, _)| index);
+    let exit = code.map_or_else(|| "without an exit code".to_owned(), |code| format!("with code {code}"));
+    if text.is_empty() {
+        format!("session runner exited {exit} and wrote nothing to controller.log")
+    } else {
+        format!("session runner exited {exit}: {}", &text[start..])
+    }
+}
+
 pub fn profile(root: &Path, name: &str) -> Result<Value> {
     let value = profiles(root)?
         .get(name)
@@ -101,7 +123,7 @@ pub fn launch(root: &Path, url: &str, started: &Value, profile: &Value) -> Resul
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&launch_file, fs::Permissions::from_mode(0o600))?;
     }
-    let args = argv(&profile["command"])?;
+    let args = command(&profile["command"], "session")?;
     let log = fs::File::create(directory.join("controller.log"))?;
     let mut command = Command::new(&args[0]);
     command
@@ -130,5 +152,28 @@ mod tests {
     fn workspace_paths_compare_without_prefix_case_or_separator() {
         assert_eq!(super::plain(r"\\?\D:\Work\WS1\"), r"d:\work\ws1");
         assert_eq!(super::plain("D:/Work/ws1/chess960"), r"d:\work\ws1\chess960");
+    }
+
+    #[test]
+    fn omitted_or_builtin_commands_run_this_binary_and_explicit_argv_is_kept() {
+        let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        assert_eq!(super::command(&serde_json::Value::Null, "session").unwrap(), [exe.clone(), "session".into()]);
+        assert_eq!(super::command(&serde_json::json!("builtin"), "planner").unwrap(), [exe, "planner".into()]);
+        assert_eq!(super::command(&serde_json::json!(["python", "s.py"]), "session").unwrap(), ["python", "s.py"]);
+        for invalid in [serde_json::json!("python"), serde_json::json!([]), serde_json::json!([" "])] {
+            assert!(super::command(&invalid, "session").is_err());
+        }
+    }
+
+    #[test]
+    fn failures_report_the_controller_log_tail() {
+        let root = crate::test_support::dir();
+        assert_eq!(super::failure(root.path(), "r", Some(1)), "session runner exited with code 1 and wrote nothing to controller.log");
+        let directory = root.path().join("coordinator").join("r");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("controller.log"), format!("{}\nWorkspace prompt changed: x\n", "é".repeat(3000))).unwrap();
+        let error = super::failure(root.path(), "r", None);
+        assert!(error.starts_with("session runner exited without an exit code: é") && error.ends_with("Workspace prompt changed: x"));
+        assert!(error.chars().count() < 2100);
     }
 }

@@ -290,6 +290,9 @@ impl Service {
             if let Some(mut workflow) = db.workflow(&id)? {
                 workflow["status"] = json!(status);
                 workflow["exit_code"] = json!(code);
+                if status == "failed" {
+                    workflow["error"] = json!(coordinator::failure(&self.root, &id, code));
+                }
                 workflow["ended_at_ms"] = json!(now);
                 db.save_workflow(&id, &workflow)?;
                 db.event(Some(&id), "coordinator_stopped", &workflow)?;

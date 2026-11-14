@@ -77,7 +77,7 @@ def judge_command(selection, prompt_path, output_path, browser_version):
     if agent["harness"] == "claude_code":
         servers = {"mcpServers": {"playwright": {"command": "npx", "args": browser_args}}}
         return [*claude_arguments(agent), "--strict-mcp-config", "--mcp-config", json.dumps(servers),
-                prompt_path.read_text(encoding="utf-8")]
+                "--", prompt_path.read_text(encoding="utf-8")]
     if agent["harness"] != "codex":
         raise ValueError(f"Judge {selection} needs a browser-capable harness")
     return [os.environ.get("CODEX_BIN", "codex"), "exec", "--ephemeral", "--skip-git-repo-check", "--json",

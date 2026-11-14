@@ -114,8 +114,7 @@ def setup(data, bind, coordinator_source, skip_build):
     profiles = data / "coordinator-profiles.json"
     if not profiles.exists():
         profile = {"coordinator_url": "http://127.0.0.1:4242", "workspace": {},
-                   "session_command": [sys.executable, str(ROOT / "scripts" / "template_session.py")],
-                   "session_planner_command": [sys.executable, str(ROOT / "scripts" / "template_planner.py")]}
+                   "session_command": "builtin", "session_planner_command": "builtin"}
         profiles.write_text(json.dumps({"default": profile}, indent=2), encoding="utf-8")
     start(data, bind, benchmark)
 

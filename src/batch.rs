@@ -117,10 +117,11 @@ impl Service {
         {
             return Err("profile requires a shared loopback coordinator_url".into());
         }
-        coordinator::argv(&profile["session_command"])?;
-        coordinator::argv(&profile["session_planner_command"])?;
-        profile["command"] = profile["session_command"].clone();
-        profile["planner_command"] = profile["session_planner_command"].clone();
+        for (field, target, subcommand) in [("session_command", "command", "session"), ("session_planner_command", "planner_command", "planner")] {
+            let command = if profile[field].is_null() { json!(coordinator::BUILTIN) } else { profile[field].clone() };
+            coordinator::command(&command, subcommand)?;
+            profile[target] = command;
+        }
         let template = fs::read_to_string(&request.template_path)?;
         if !template.contains("{workspace_name}") || !template.contains("{benchmark_task}") {
             return Err("template requires {workspace_name} and {benchmark_task}".into());

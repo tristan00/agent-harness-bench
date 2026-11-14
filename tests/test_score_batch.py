@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 os.environ["AGENT_FAMILY"] = "codex"
@@ -41,6 +41,15 @@ class RunnerTests(unittest.TestCase):
             for selection in [None, "astra_xhigh", "sol_medium"]:
                 with self.assertRaises(ValueError):
                     judge_command(selection, path, path.with_name("answer.txt"), "0.0.85")
+
+    def test_claude_judge_prompt_is_not_parsed_as_an_mcp_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prompt.txt"
+            path.write_text("You are evaluating a frozen game submission", encoding="utf-8")
+            with patch.dict(os.environ, {"AGENT_FAMILY": "claude"}):
+                command = judge_command(CONFIG["judge_selections"]["claude"], path, path.with_name("answer.txt"), "0.0.85")
+            self.assertEqual(command[-2:], ["--", "You are evaluating a frozen game submission"])
+            self.assertLess(command.index("--mcp-config"), command.index("--"))
 
     def test_existing_scores_and_missing_submissions_never_launch_judges(self):
         case = {"run_id": "test"}

@@ -1,4 +1,8 @@
-use agent_harness_bench::{Result, service::Service};
+use agent_harness_bench::{
+    Result,
+    service::Service,
+    session::{self, Subcommand},
+};
 use serde_json::{Value, json};
 use std::{
     io::{self, BufRead, Write},
@@ -13,6 +17,11 @@ fn main() {
 }
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    match session::subcommand(&args)? {
+        Some(Subcommand::Session) => return session::session(),
+        Some(Subcommand::Planner) => std::process::exit(session::planner()?),
+        None => {}
+    }
     if args.get(1).map(String::as_str) == Some("baseline") {
         return baseline(args.get(2).map(String::as_str).unwrap_or("random"));
     }

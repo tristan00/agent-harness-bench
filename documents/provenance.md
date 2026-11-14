@@ -2,11 +2,11 @@
 
 **Planner and worker agents must not read this document or anything else in this repository.**
 
-`src/engine.rs` was copied from the user's neighboring project:
+The reusable Chess960 tooling is maintained outside this benchmark in:
 
-`../chess960_rule_based_evaluator/chess960/src/engine.rs`
+`D:\harness_work\bench_tooling`
 
-The engine remains self-contained and retains its all-960-starts, perft, overlapping-castling, en-passant, promotion and draw tests. This project does not depend on the neighboring directory at build or runtime. The Elo formula was reviewed there and reimplemented independently with this service's records and explicit double-forfeit handling.
+The benchmark depends on that standalone Rust crate by path. It retains the all-960-starts, perft, overlapping-castling, en-passant, promotion and draw tests. The Elo formula is implemented independently in this service with explicit double-forfeit handling.
 
 The old project's rule-author restrictions do not apply to these benchmark entrants: the new preset prompt specifies only the input/output/runtime contract and evaluation rules, leaving implementation choices open.
 
